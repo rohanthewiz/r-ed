@@ -5,7 +5,7 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 #
-# GoReleaser config for SpiceEdit. Driven by .github/workflows/release.yml on
+# GoReleaser config for r-ed. Driven by .github/workflows/release.yml on
 # every push to main: that workflow bumps internal/version/version.go and
 # tags v<x.y.z>, then invokes `goreleaser release --clean`. Goreleaser then
 # cross-compiles the binary, archives it, attaches it to a GitHub Release,
@@ -13,15 +13,15 @@
 
 version: 2
 
-project_name: spiceedit
+project_name: r-ed
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: spiceedit
-    binary: spiceedit
+  - id: r-ed
+    binary: r-ed
     main: .
     env:
       - CGO_ENABLED=0
@@ -63,29 +63,29 @@ changelog:
 # Homebrew formula committed straight back into this repo under Formula/.
 # Users install via:
 #
-#   brew tap cloudmanic/spice-edit https://github.com/cloudmanic/spice-edit
-#   brew install cloudmanic/spice-edit/spice-edit
+#   brew tap rohanthewiz/r-ed https://github.com/rohanthewiz/r-ed
+#   brew install rohanthewiz/r-ed/r-ed
 #
 # Because the formula lives in the same repo as the source, the default
 # GITHUB_TOKEN the workflow already holds is enough to push it — no PAT,
 # no separate tap repo. The [skip ci] marker on the formula-update commit
 # stops the new push from triggering a second release run.
 brews:
-  - name: spice-edit
+  - name: r-ed
     repository:
-      owner: cloudmanic
-      name: spice-edit
+      owner: rohanthewiz
+      name: r-ed
       branch: main
       token: "{{ .Env.GITHUB_TOKEN }}"
     directory: Formula
     commit_msg_template: "Update {{ .ProjectName }} brew formula to {{ .Tag }} [skip ci]"
-    homepage: "https://github.com/cloudmanic/spice-edit"
-    description: "SpiceEdit — opinionated mouse-first terminal code editor."
+    homepage: "https://github.com/rohanthewiz/r-ed"
+    description: "r-ed — opinionated mouse-first terminal code editor."
     license: "MIT"
     commit_author:
       name: github-actions[bot]
       email: 41898282+github-actions[bot]@users.noreply.github.com
     install: |
-      bin.install "spiceedit"
+      bin.install "r-ed"
     test: |
-      assert_path_exists bin/"spiceedit"
+      assert_path_exists bin/"r-ed"

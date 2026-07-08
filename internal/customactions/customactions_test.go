@@ -274,7 +274,7 @@ func TestLoad_BadJSONIsAnError(t *testing.T) {
 func TestDefaultPath_PrefersXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgtest")
 	got := DefaultPath()
-	want := filepath.Join("/tmp/xdgtest", "spiceedit", "actions.json")
+	want := filepath.Join("/tmp/xdgtest", "r-ed", "actions.json")
 	if got != want {
 		t.Fatalf("DefaultPath = %q, want %q", got, want)
 	}
@@ -286,7 +286,7 @@ func TestDefaultPath_FallsBackToHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/Users/test")
 	got := DefaultPath()
-	want := filepath.Join("/Users/test", ".config", "spiceedit", "actions.json")
+	want := filepath.Join("/Users/test", ".config", "r-ed", "actions.json")
 	if got != want {
 		t.Fatalf("DefaultPath = %q, want %q", got, want)
 	}
@@ -299,19 +299,19 @@ func TestDefaultPath_FallsBackToHome(t *testing.T) {
 func TestLogPath_PrefersXDGState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdgstate")
 	got := LogPath()
-	want := filepath.Join("/tmp/xdgstate", "spiceedit", "actions.log")
+	want := filepath.Join("/tmp/xdgstate", "r-ed", "actions.log")
 	if got != want {
 		t.Fatalf("LogPath = %q, want %q", got, want)
 	}
 }
 
 // TestLogPath_FallsBackToHome covers the common case — no XDG_STATE_HOME,
-// log lives under ~/.local/state/spiceedit/.
+// log lives under ~/.local/state/r-ed/.
 func TestLogPath_FallsBackToHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "/Users/test")
 	got := LogPath()
-	want := filepath.Join("/Users/test", ".local", "state", "spiceedit", "actions.log")
+	want := filepath.Join("/Users/test", ".local", "state", "r-ed", "actions.log")
 	if got != want {
 		t.Fatalf("LogPath = %q, want %q", got, want)
 	}

@@ -5,7 +5,7 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 #
-# Test pipeline for SpiceEdit. Runs `go test ./...` with the race detector
+# Test pipeline for r-ed. Runs `go test ./...` with the race detector
 # on every push and every pull request, on Linux + macOS so we catch
 # platform-specific flakes before they ship. The release workflow
 # (release.yml) doesn't depend on this — it triggers separately on push

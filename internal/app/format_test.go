@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudmanic/spice-edit/internal/editor"
-	"github.com/cloudmanic/spice-edit/internal/format"
+	"github.com/rohanthewiz/r-ed/internal/editor"
+	"github.com/rohanthewiz/r-ed/internal/format"
 )
 
-// writeFormatConfig drops a .spiceedit/format.json into root with the
+// writeFormatConfig drops a .r-ed/format.json into root with the
 // given JSON body. Pulled out so each test reads as the scenario it's
 // pinning down rather than mkdir+write boilerplate.
 func writeFormatConfig(t *testing.T, root, body string) {
@@ -35,7 +35,7 @@ func writeFormatConfig(t *testing.T, root, body string) {
 // defaults file to temp paths for the duration of the test.
 //
 // Defaults are pinned alongside trust because real user defaults
-// (e.g. the gofmt entry in ~/.config/spiceedit/format-defaults.json)
+// (e.g. the gofmt entry in ~/.config/r-ed/format-defaults.json)
 // would otherwise leak into runFormatOnSave tests and silently
 // trigger install prompts they weren't written to handle. Tests
 // that *do* want a defaults file call useTestDefaultsFile after
@@ -44,8 +44,8 @@ func useTestTrustFile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	trustPath := filepath.Join(dir, "trust.json")
-	t.Setenv("SPICEEDIT_TRUST_FILE", trustPath)
-	t.Setenv("SPICEEDIT_DEFAULTS_FILE", filepath.Join(dir, "no-such-defaults.json"))
+	t.Setenv("RED_TRUST_FILE", trustPath)
+	t.Setenv("RED_DEFAULTS_FILE", filepath.Join(dir, "no-such-defaults.json"))
 	return trustPath
 }
 
@@ -61,7 +61,7 @@ func useTestDefaultsFile(t *testing.T, body string) string {
 			t.Fatalf("seed defaults: %v", err)
 		}
 	}
-	t.Setenv("SPICEEDIT_DEFAULTS_FILE", path)
+	t.Setenv("RED_DEFAULTS_FILE", path)
 	return path
 }
 
@@ -101,7 +101,7 @@ func openTabAtPath(t *testing.T, a *App, path string) *editor.Tab {
 }
 
 // TestRunFormatOnSave_NoConfigIsNoop pins the central opt-in promise:
-// without a .spiceedit/format.json, save behaves exactly like before
+// without a .r-ed/format.json, save behaves exactly like before
 // — no exec, no prompt, no flash about formatting.
 func TestRunFormatOnSave_NoConfigIsNoop(t *testing.T) {
 	useTestTrustFile(t)

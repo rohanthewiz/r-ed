@@ -131,8 +131,8 @@ func TestLoadTrust_MalformedJSONReturnsEmpty(t *testing.T) {
 // rest of the suite (and tests in the app package) can redirect the
 // trust file without touching the user's real config dir.
 func TestDefaultTrustPath_Override(t *testing.T) {
-	t.Setenv(trustFileEnv, "/tmp/spiceedit-test/trust.json")
-	if got := DefaultTrustPath(); got != "/tmp/spiceedit-test/trust.json" {
+	t.Setenv(trustFileEnv, "/tmp/r-ed-test/trust.json")
+	if got := DefaultTrustPath(); got != "/tmp/r-ed-test/trust.json" {
 		t.Fatalf("override ignored: got %q", got)
 	}
 }

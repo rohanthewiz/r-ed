@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cloudmanic/spice-edit/internal/customactions"
+	"github.com/rohanthewiz/r-ed/internal/customactions"
 )
 
 // actionVars snapshots the editor-state variables a custom action can

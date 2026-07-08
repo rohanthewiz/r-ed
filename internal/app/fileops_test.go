@@ -538,14 +538,14 @@ func TestRelativePathFor_InsideRoot(t *testing.T) {
 }
 
 // TestRelativePathFor_RelativeRootDir is the regression test for the bug
-// where `spiceedit` with no argument leaves App.rootDir = "." while tree
+// where `r-ed` with no argument leaves App.rootDir = "." while tree
 // and tab paths are absolute — filepath.Rel refuses to mix the two and
 // the helper used to silently fall back to the absolute path. Now we
 // base the relativisation on tree.Root.Path which is always absolute.
 func TestRelativePathFor_RelativeRootDir(t *testing.T) {
 	dir := t.TempDir()
 	a := newTestApp(t, dir)
-	a.rootDir = "." // simulate `spiceedit` invoked with no argument
+	a.rootDir = "." // simulate `r-ed` invoked with no argument
 
 	target := filepath.Join(a.tree.Root.Path, "sub", "thing.go")
 	got := a.relativePathFor(target)

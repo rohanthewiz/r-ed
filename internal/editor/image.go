@@ -40,7 +40,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/theme"
+	"github.com/rohanthewiz/r-ed/internal/theme"
 )
 
 // imageMode is the value Tab.Mode takes when the tab is showing an

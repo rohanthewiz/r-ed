@@ -5,14 +5,14 @@
   Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 -->
 
-# CLAUDE.md — SpiceEdit
+# CLAUDE.md — r-ed
 
 Project-specific guidance for Claude Code. Read this first; it captures
 conventions and design decisions that aren't obvious from the code alone.
 
 ## What this project is
 
-SpiceEdit is an opinionated, **mouse-first** terminal code editor aimed at
+r-ed is an opinionated, **mouse-first** terminal code editor aimed at
 SSH-into-tmux workflows. It looks and behaves like a tiny VS Code: file
 tree on the left, tabs across the top, syntax-highlighted editor in the
 middle, status bar at the bottom. It ships as a single static Go binary
@@ -31,8 +31,8 @@ features, make sure they're reachable from the main menu first.
 
 ## Module / repo
 
-- Module: `github.com/cloudmanic/spice-edit`
-- Binary name: `spiceedit` (one word, lowercase — Makefile, goreleaser,
+- Module: `github.com/rohanthewiz/r-ed`
+- Binary name: `r-ed` (one word, lowercase — Makefile, goreleaser,
   brew formula all assume this)
 - Brew tap: this same repo, `Formula/` directory (no separate tap repo)
 
@@ -46,7 +46,7 @@ internal/editor/tab.go        Tab: path, buffer, cursor, anchor, scroll, dirty s
 internal/editor/highlight.go  Chroma → []tcell.Style per line
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
-internal/spiceconfig/spiceconfig.go ~/.config/spiceedit/config.json loader (icons mode)
+internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader (icons mode)
 internal/icons/icons.go       Nerd Font detection + per-file glyph mapping
 internal/theme/theme.go       Tokyo Night palette + syntax color mapping
 internal/version/version.go   const Version = "x.y.z" — single line, CI bumps it
@@ -151,7 +151,7 @@ let the editor shrink below that.
 
 ```sh
 make run          # go run . in current dir
-make build        # build to ./bin/spiceedit
+make build        # build to ./bin/r-ed
 make build-linux  # cross-compile linux/amd64
 make install      # go install to $GOPATH/bin
 make tidy         # go mod tidy
@@ -171,7 +171,7 @@ Pushes to `main` trigger `.github/workflows/release.yml`:
    auto-bumped, committed back to main with `[skip ci]`, and pushed.
 3. Tags `v<x.y.z>`.
 4. GoReleaser cross-compiles, attaches archives to a GitHub Release,
-   and writes `Formula/spice-edit.rb` back into this repo (using the
+   and writes `Formula/r-ed.rb` back into this repo (using the
    default `GITHUB_TOKEN` — no PAT). The formula commit also carries
    `[skip ci]` to break the loop.
 
@@ -183,7 +183,7 @@ loops forever.
 
 - `Ctrl+` editor shortcuts (they fight tmux/terminals — that's the
   whole reason the action menu exists).
-- A config file / dotfile / plugin system. SpiceEdit is opinionated.
+- A config file / dotfile / plugin system. r-ed is opinionated.
 - CGO dependencies. The whole point is one static binary.
 - Tree-sitter. We use Chroma intentionally — pure Go, no setup.
 - A separate `homebrew-tap` repo. The formula lives here under

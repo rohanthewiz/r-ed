@@ -31,7 +31,7 @@ func writeConfig(t *testing.T, root, body string) {
 // TestLoad_MissingFileReturnsNil pins the opt-in behavior: no config
 // file means "no formatting configured," not an error. Without this
 // the editor would surface a noisy load error every time someone
-// opened a project that simply doesn't use SpiceEdit's formatter.
+// opened a project that simply doesn't use r-ed's formatter.
 func TestLoad_MissingFileReturnsNil(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := Load(root)
@@ -180,7 +180,7 @@ func TestCommandFor_DoesNotMutateTemplate(t *testing.T) {
 // will have files committed at the old path.
 func TestConfigPath(t *testing.T) {
 	got := ConfigPath("/proj")
-	want := filepath.Join("/proj", ".spiceedit", "format.json")
+	want := filepath.Join("/proj", ".r-ed", "format.json")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

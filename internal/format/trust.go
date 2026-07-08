@@ -8,14 +8,14 @@
 package format
 
 // The trust system answers one question on each save: "is the user
-// OK with this project's .spiceedit/format.json running its
+// OK with this project's .r-ed/format.json running its
 // configured commands on save?"
 //
 // Without it, cloning a malicious repo and saving a file would
 // silently exec whatever the dotfile said. With it, every project
 // gets a one-time Yes/No prompt the first time we'd otherwise run
 // a formatter, and the answer is remembered globally in
-// ~/.config/spiceedit/format-trust.json.
+// ~/.config/r-ed/format-trust.json.
 //
 // The remembered key is (absolute project path, sha256 of the
 // format.json bytes). When the file is edited, the hash changes and
@@ -92,27 +92,27 @@ const (
 
 // trustFileEnv lets tests redirect the trust file location. Empty
 // outside of tests; production code uses DefaultTrustPath.
-var trustFileEnv = "SPICEEDIT_TRUST_FILE"
+var trustFileEnv = "RED_TRUST_FILE"
 
 // DefaultTrustPath returns the canonical trust-file location:
-// $XDG_CONFIG_HOME/spiceedit/format-trust.json, falling back to
-// ~/.config/spiceedit/format-trust.json. Returns "" when neither
+// $XDG_CONFIG_HOME/r-ed/format-trust.json, falling back to
+// ~/.config/r-ed/format-trust.json. Returns "" when neither
 // resolves — callers treat that as "no persistent trust available"
 // (every save will re-prompt, which is annoying but safe).
 //
-// Tests can override the location by setting SPICEEDIT_TRUST_FILE.
+// Tests can override the location by setting RED_TRUST_FILE.
 func DefaultTrustPath() string {
 	if override := os.Getenv(trustFileEnv); override != "" {
 		return override
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "spiceedit", "format-trust.json")
+		return filepath.Join(xdg, "r-ed", "format-trust.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "spiceedit", "format-trust.json")
+	return filepath.Join(home, ".config", "r-ed", "format-trust.json")
 }
 
 // LoadTrust reads the trust file at path. A missing file returns an

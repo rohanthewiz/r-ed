@@ -18,7 +18,7 @@ package app
 import (
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/filetree"
+	"github.com/rohanthewiz/r-ed/internal/filetree"
 )
 
 // Layout constants for the secondary modals. Width is wide enough to hold a

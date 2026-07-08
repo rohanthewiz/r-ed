@@ -6,15 +6,15 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 #
-# One-liner installer / upgrader for SpiceEdit. Detects the host OS and
+# One-liner installer / upgrader for r-ed. Detects the host OS and
 # architecture, downloads the matching archive from the latest GitHub
-# Release, extracts the static `spiceedit` binary, and drops it into
+# Release, extracts the static `r-ed` binary, and drops it into
 # ~/.local/bin (preferred) or /usr/local/bin. Re-running the script
 # performs an upgrade — same flow, latest version.
 #
 # Usage:
 #
-#   curl -fsSL https://raw.githubusercontent.com/cloudmanic/spice-edit/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/rohanthewiz/r-ed/main/install.sh | sh
 #
 # Override the install location:
 #
@@ -29,8 +29,8 @@
 
 set -eu
 
-REPO="cloudmanic/spice-edit"
-BINARY="spiceedit"
+REPO="rohanthewiz/r-ed"
+BINARY="r-ed"
 
 # Pretty output when stderr is a terminal, plain otherwise so piping into
 # logs doesn't end up with stray escape codes.

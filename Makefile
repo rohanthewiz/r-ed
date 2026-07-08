@@ -5,7 +5,7 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 
-BINARY := spiceedit
+BINARY := r-ed
 SITE_DIR := website
 
 .PHONY: run build install build-linux test test-short coverage tidy clean help \
@@ -13,7 +13,7 @@ SITE_DIR := website
 
 # help is the default target so `make` with no args prints what's available.
 help:
-	@echo "SpiceEdit — opinionated mouse-first terminal code editor"
+	@echo "r-ed — opinionated mouse-first terminal code editor"
 	@echo ""
 	@echo "Editor targets:"
 	@echo "  make run          Run the editor in the current directory."
@@ -42,7 +42,7 @@ build:
 	mkdir -p bin
 	go build -o bin/$(BINARY) .
 
-# install copies the binary into /usr/local/bin so you can launch it as `spiceedit`.
+# install copies the binary into /usr/local/bin so you can launch it as `r-ed`.
 install: build
 	install -m 0755 bin/$(BINARY) /usr/local/bin/$(BINARY)
 

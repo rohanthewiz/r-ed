@@ -20,8 +20,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/icons"
-	"github.com/cloudmanic/spice-edit/internal/theme"
+	"github.com/rohanthewiz/r-ed/internal/icons"
+	"github.com/rohanthewiz/r-ed/internal/theme"
 )
 
 // Node is a single entry in the file tree. Directories also carry their
@@ -60,7 +60,7 @@ type Tree struct {
 	DirtyFolders map[string]bool
 
 	// IconsEnabled toggles the Nerd Font glyph that prefixes each row.
-	// Set by App.loadSpiceConfig at startup based on the user's
+	// Set by App.loadUserConfig at startup based on the user's
 	// config.json + auto-detection. Off means the row is rendered with
 	// only the existing chevron (the legacy look) — important for
 	// terminals or fonts that can't render the private-use glyphs.

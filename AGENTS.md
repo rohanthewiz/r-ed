@@ -2,12 +2,12 @@
 
 ## Project Structure & Module Organization
 
-SpiceEdit is a Go terminal editor module at `github.com/cloudmanic/spice-edit`; the CLI entry point is `main.go` and the binary is `spiceedit`. Core packages live under `internal/`: `app` owns the event loop and rendering, `editor` owns buffers/tabs/editing behavior, `filetree` manages the sidebar tree, and supporting packages cover clipboard, formatting, icons, config, theme, finder, and versioning. Tests sit beside source files as `*_test.go`. Website assets and docs live in `website/` as a Hugo + Tailwind site. Release packaging includes `Formula/spice-edit.rb`, `install.sh`, and samples under `samples/`.
+r-ed is a Go terminal editor module at `github.com/rohanthewiz/r-ed`; the CLI entry point is `main.go` and the binary is `r-ed`. Core packages live under `internal/`: `app` owns the event loop and rendering, `editor` owns buffers/tabs/editing behavior, `filetree` manages the sidebar tree, and supporting packages cover clipboard, formatting, icons, config, theme, finder, and versioning. Tests sit beside source files as `*_test.go`. Website assets and docs live in `website/` as a Hugo + Tailwind site. Release packaging includes `Formula/r-ed.rb`, `install.sh`, and samples under `samples/`.
 
 ## Build, Test, and Development Commands
 
 - `make run`: run the editor in the current directory with `go run .`.
-- `make build`: compile `./bin/spiceedit`.
+- `make build`: compile `./bin/r-ed`.
 - `make build-linux`: cross-compile a static `linux/amd64` binary.
 - `make test`: run `go test -race ./...`; use before PRs.
 - `make test-short`: quick `go test -short ./...` loop while iterating.

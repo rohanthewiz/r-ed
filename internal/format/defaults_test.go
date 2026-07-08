@@ -66,7 +66,7 @@ func TestLoadDefaults_ParsesValidJSON(t *testing.T) {
 }
 
 // TestInstallCommandIntoProject_NewFile pins the bootstrap path:
-// project has no .spiceedit dir at all, and the install creates
+// project has no .r-ed dir at all, and the install creates
 // both the dir and the file with the single command.
 func TestInstallCommandIntoProject_NewFile(t *testing.T) {
 	root := t.TempDir()

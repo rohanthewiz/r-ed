@@ -20,7 +20,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/filetree"
+	"github.com/rohanthewiz/r-ed/internal/filetree"
 )
 
 // TestCloseAllModals_ClearsEverything proves the helper turns off every

@@ -30,8 +30,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudmanic/spice-edit/internal/clipboard"
-	"github.com/cloudmanic/spice-edit/internal/filetree"
+	"github.com/rohanthewiz/r-ed/internal/clipboard"
+	"github.com/rohanthewiz/r-ed/internal/filetree"
 )
 
 // -----------------------------------------------------------------------------

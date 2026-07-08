@@ -39,17 +39,17 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/spiceconfig"
+	"github.com/rohanthewiz/r-ed/internal/userconfig"
 )
 
 // Resolve maps a user's IconsMode preference to a concrete on/off
 // decision, running detection iff the mode is "auto". Centralised so
 // the App startup path stays readable: cfg + detect → bool.
-func Resolve(mode spiceconfig.IconsMode) bool {
+func Resolve(mode userconfig.IconsMode) bool {
 	switch mode {
-	case spiceconfig.IconsOn:
+	case userconfig.IconsOn:
 		return true
-	case spiceconfig.IconsOff:
+	case userconfig.IconsOff:
 		return false
 	default:
 		return Detect()

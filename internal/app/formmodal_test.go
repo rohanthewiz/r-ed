@@ -12,7 +12,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/customactions"
+	"github.com/rohanthewiz/r-ed/internal/customactions"
 )
 
 // scpPrompts is the worked example from the docs / README — keeps

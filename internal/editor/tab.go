@@ -16,7 +16,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"github.com/cloudmanic/spice-edit/internal/theme"
+	"github.com/rohanthewiz/r-ed/internal/theme"
 )
 
 // gutterWidth is the cell width reserved for the line-number column inside

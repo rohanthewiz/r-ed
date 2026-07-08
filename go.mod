@@ -1,4 +1,4 @@
-module github.com/cloudmanic/spice-edit
+module github.com/rohanthewiz/r-ed
 
 go 1.24.0
 

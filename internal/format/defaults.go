@@ -9,8 +9,8 @@ package format
 
 // Global format-defaults live at:
 //
-//	$XDG_CONFIG_HOME/spiceedit/format-defaults.json   (preferred)
-//	~/.config/spiceedit/format-defaults.json          (fallback)
+//	$XDG_CONFIG_HOME/r-ed/format-defaults.json   (preferred)
+//	~/.config/r-ed/format-defaults.json          (fallback)
 //
 // The shape is identical to a per-project format.json:
 //
@@ -26,7 +26,7 @@ package format
 // a save fires in a project where the project's format.json has no
 // entry for that file's extension, the editor offers to "install"
 // the default into the project's config (writing it into
-// .spiceedit/format.json on consent). That's the only time defaults
+// .r-ed/format.json on consent). That's the only time defaults
 // are consulted; without an install, the per-project config is the
 // sole source of truth at save time.
 
@@ -43,27 +43,27 @@ const DefaultsFile = "format-defaults.json"
 // defaultsPathEnv lets tests redirect the defaults file location.
 // Production code uses DefaultsPath. We use a separate env var from
 // the trust override so a single test can set both independently.
-var defaultsPathEnv = "SPICEEDIT_DEFAULTS_FILE"
+var defaultsPathEnv = "RED_DEFAULTS_FILE"
 
 // DefaultsPath returns the canonical defaults-file location:
-// $XDG_CONFIG_HOME/spiceedit/format-defaults.json, falling back to
-// ~/.config/spiceedit/format-defaults.json. Returns "" when neither
+// $XDG_CONFIG_HOME/r-ed/format-defaults.json, falling back to
+// ~/.config/r-ed/format-defaults.json. Returns "" when neither
 // resolves — the caller treats that as "no defaults file possible"
 // and skips the install-prompt feature entirely.
 //
-// Tests can override the path via SPICEEDIT_DEFAULTS_FILE.
+// Tests can override the path via RED_DEFAULTS_FILE.
 func DefaultsPath() string {
 	if override := os.Getenv(defaultsPathEnv); override != "" {
 		return override
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "spiceedit", DefaultsFile)
+		return filepath.Join(xdg, "r-ed", DefaultsFile)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "spiceedit", DefaultsFile)
+	return filepath.Join(home, ".config", "r-ed", DefaultsFile)
 }
 
 // LoadDefaults reads the user's global format-defaults file. A
@@ -94,7 +94,7 @@ func LoadDefaults(path string) (*Config, error) {
 
 // InstallCommandIntoProject merges (ext, argv) into the project's
 // format.json, preserving any existing entries. Creates the
-// .spiceedit directory and the file if either is missing. Writes
+// .r-ed directory and the file if either is missing. Writes
 // atomically (temp + rename) so a crash mid-write can't corrupt the
 // config a teammate just pulled.
 //

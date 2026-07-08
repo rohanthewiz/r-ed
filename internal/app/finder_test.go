@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudmanic/spice-edit/internal/finder"
+	"github.com/rohanthewiz/r-ed/internal/finder"
 	"github.com/gdamore/tcell/v2"
 )
 

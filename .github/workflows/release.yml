@@ -5,7 +5,7 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 #
-# Release pipeline for SpiceEdit. Triggers on every push to main:
+# Release pipeline for r-ed. Triggers on every push to main:
 #
 #   1. Determines the next version. If the pushed commit hand-edited
 #      internal/version/version.go (you bumped major/minor manually), the
@@ -20,14 +20,19 @@
 
 name: Release
 
+# PAUSED during the spiceedit → r-ed rebrand: the push trigger is
+# disabled so ordinary pushes to main don't cut releases against the
+# renamed module/binary until the new repo identity is verified
+# end-to-end. Re-enable by restoring:
+#
+#   push:
+#     branches: [main]
+#
+# under `on:` below. Until then, releases run only via manual
+# workflow_dispatch — which also remains the escape hatch if a merge
+# commit accidentally carries a skip-CI marker once the push trigger
+# is back.
 on:
-  push:
-    branches: [main]
-  # Manual escape hatch. If a merge commit accidentally carries a
-  # skip-CI marker (or anything else suppresses the auto-trigger),
-  # we can rerun the release flow against the current main without
-  # needing an empty no-op commit. Bumps, tags, and dispatches Pages
-  # exactly the same as a normal push trigger.
   workflow_dispatch:
 
 # Pushes back to main need write access to the repo's contents. The
