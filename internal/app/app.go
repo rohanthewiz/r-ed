@@ -565,18 +565,28 @@ func (a *App) handleEvent(ev tcell.Event) {
 	}
 }
 
-// refreshTreeNow re-runs the same refresh pipeline the 10s timer
-// fires: rescan the file tree (preserving expansion state), reconcile
-// any open tabs with disk, refresh git status, and invalidate the
-// finder index so a freshly-pulled file shows up everywhere at once.
-// Called from the periodic event and from runCustomAction's success
-// path so a Copy-from-remote action's output is visible immediately
-// instead of after the next tick.
-func (a *App) refreshTreeNow() {
+// workspaceChanged re-syncs every subsystem that mirrors on-disk
+// project state — the file tree (preserving expansion state), git
+// status, and the finder index — after any mutation: create / rename /
+// delete, a formatter-config install, or an external change. Call this
+// instead of the individual refreshes; when each call site spelled out
+// the trio by hand, forgetting one was an easy stale-UI bug (the
+// formatter-install path really did miss the finder for a while).
+func (a *App) workspaceChanged() {
 	a.tree.Refresh()
-	a.reconcileOpenTabsWithDisk()
 	a.refreshGitStatus()
 	a.invalidateFinder()
+}
+
+// refreshTreeNow re-runs the same refresh pipeline the 10s timer
+// fires: everything workspaceChanged covers, plus reconciling open
+// tabs with disk (silent reload / dirty warning / DiskGone). Called
+// from the periodic event and from runCustomAction's success path so
+// a Copy-from-remote action's output is visible immediately instead
+// of after the next tick.
+func (a *App) refreshTreeNow() {
+	a.workspaceChanged()
+	a.reconcileOpenTabsWithDisk()
 }
 
 // handleCustomActionDone surfaces the result of an async custom-action

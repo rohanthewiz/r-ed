@@ -2091,3 +2091,28 @@ func TestDrawTabBar_NoIconWhenDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkspaceChanged_RefreshesTreeAndToleratesNilFinder pins the
+// single mutation-refresh entry point: a file created on disk shows up
+// in the tree after workspaceChanged, and the call is safe when no
+// finder is wired (invalidateFinder guards nil) — every fileops
+// mutation routes through here, so a panic would break them all.
+func TestWorkspaceChanged_RefreshesTreeAndToleratesNilFinder(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "fresh.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	a.workspaceChanged() // finder is nil in newTestApp — must not panic
+
+	found := false
+	for _, c := range a.tree.Root.Children {
+		if c.Name == "fresh.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("workspaceChanged should refresh the tree to include fresh.txt")
+	}
+}

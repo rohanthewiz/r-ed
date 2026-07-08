@@ -245,12 +245,13 @@ func (a *App) openFormatInstallPrompt(idx int, ext string, argvTemplate []string
 		// the prompt was really opt-in, not a leftover dismissal.
 		app.persistTrust(root, hash, true)
 		app.persistInstallDecline(root, ext, false)
-		// Refresh the file tree immediately so the new
-		// .r-ed/format.json appears in the sidebar without
-		// waiting for the 10-second tick. Same pair fileops.go uses
-		// after every other directory mutation we make.
-		app.tree.Refresh()
-		app.refreshGitStatus()
+		// Re-sync tree / git / finder immediately so the new
+		// .r-ed/format.json appears in the sidebar (and the finder
+		// index) without waiting for the 10-second tick. Previously
+		// this path refreshed only tree + git and quietly left the
+		// finder stale — exactly the forget-one bug workspaceChanged
+		// exists to prevent.
+		app.workspaceChanged()
 		// Substitute $FILE at run time, never at install time. This
 		// keeps the on-disk template portable while still pointing
 		// the formatter at the file the user just saved.

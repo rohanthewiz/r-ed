@@ -90,8 +90,10 @@ keeps its `_test.go` sibling.
 
 ## Status
 
-- [x] Phase 0 — rebrand (in progress 2026-07-08)
-- [ ] Phase 1 — modal stack
+- [x] Phase 0 — rebrand (done 2026-07-08)
+- [x] Phase 1 — modal stack (done 2026-07-08; async tab-identity check
+      turned out to be a non-issue — format/custom-action completions
+      already resolve tabs by path)
 - [ ] Phase 2 — command palette
 - [ ] Phase 3 — decoration layer
 - [ ] Phase 4 — git integration

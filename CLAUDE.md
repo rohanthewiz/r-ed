@@ -136,6 +136,18 @@ On each tree-refresh tick, `reconcileOpenTabsWithDisk` checks each open
 tab's mtime: clean buffer + changed file → silent reload; dirty buffer
 + changed file → warning; file deleted → set `DiskGone` once.
 
+### Single-slot modal interface (modal.go)
+Every secondary overlay (prompt, confirm, dirty-close, form, tree
+context, finder) is a struct implementing the `modal` interface
+(`handleKey` / `handleMouse` / `draw`) held in the single `App.modal`
+slot — nil means none. `openModal` enforces mutual exclusivity. When
+adding a modal: implement the interface, compute button geometry in ONE
+method returning `btnRect`s that both draw and mouse hit-testing
+consume, and reuse `textField` for any single-line input. Do NOT add
+per-modal fields back onto App or new branches to handleKey/handleMouse.
+After any workspace mutation call `a.workspaceChanged()` — never the
+individual tree/git/finder refreshes.
+
 ### Modal layout via `relY` and dynamic `labelFor`
 The action menu uses named struct literals with an optional `labelFor`
 hook so labels like "Show Sidebar" / "Hide Sidebar" toggle in place.

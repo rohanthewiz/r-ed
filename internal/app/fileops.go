@@ -121,9 +121,7 @@ func (a *App) doCreateFile(parent, name string) {
 		a.flash(fmt.Sprintf("Create failed: %v", err))
 		return
 	}
-	a.tree.Refresh()
-	a.refreshGitStatus()
-	a.invalidateFinder()
+	a.workspaceChanged()
 	a.openFile(target)
 	a.flash(fmt.Sprintf("Created %s", name))
 }
@@ -157,9 +155,7 @@ func (a *App) doRenameFile(oldPath, newName string) {
 			t.DiskGone = false
 		}
 	}
-	a.tree.Refresh()
-	a.refreshGitStatus()
-	a.invalidateFinder()
+	a.workspaceChanged()
 	a.flash(fmt.Sprintf("Renamed to %s", newName))
 }
 
@@ -182,9 +178,7 @@ func (a *App) doDeletePath(path string) {
 			a.closeTab(i)
 		}
 	}
-	a.tree.Refresh()
-	a.refreshGitStatus()
-	a.invalidateFinder()
+	a.workspaceChanged()
 	a.flash(fmt.Sprintf("Deleted %s", filepath.Base(path)))
 }
 
@@ -357,9 +351,7 @@ func (a *App) doRenameFolder(oldPath, newName string) {
 			a.setActiveFolder(filepath.Join(newPath, a.activeFolder[len(prefix):]))
 		}
 	}
-	a.tree.Refresh()
-	a.refreshGitStatus()
-	a.invalidateFinder()
+	a.workspaceChanged()
 	a.flash(fmt.Sprintf("Renamed to %s", newName))
 }
 
