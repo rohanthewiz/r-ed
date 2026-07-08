@@ -14,14 +14,15 @@ package app
 //
 // All the index/scoring lifting lives in internal/finder; this
 // file is just the wiring between user input and the buffer/tree
-// that already exist.
+// that already exist. The cached index (App.finder) outlives the
+// modal — finderModal is only the transient UI state of one open.
 
 import (
 	"path/filepath"
 	"time"
 
-	"github.com/rohanthewiz/r-ed/internal/finder"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rohanthewiz/r-ed/internal/finder"
 )
 
 const (
@@ -50,18 +51,22 @@ type finderRebuiltEvent struct {
 // When satisfies the tcell.Event interface.
 func (e *finderRebuiltEvent) When() time.Time { return e.when }
 
+// finderModal is the transient UI state of one finder session: the
+// query field, the highlighted row, and the current result page.
+type finderModal struct {
+	field    textField
+	selected int
+	results  []finder.Result
+}
+
 // openFinder shows the project-wide file finder. Triggers a
 // background rebuild on every open so external file changes are
 // reflected even if the periodic invalidation tick hasn't fired.
 // (Building when the index is already StateReady is a no-op
 // inside the orchestrator's coalesce gate.)
 func (a *App) openFinder() {
-	a.closeAllModals()
-	a.finderOpen = true
-	a.finderQuery = nil
-	a.finderCursor = 0
-	a.finderSelected = 0
-	a.finderResults = nil
+	m := &finderModal{}
+	a.openModal(m)
 	scr := a.screen
 	if a.finder != nil {
 		// Rebuild only when the cache is genuinely stale. A re-open
@@ -72,18 +77,7 @@ func (a *App) openFinder() {
 			})
 		}
 	}
-	a.refreshFinderResults()
-}
-
-// closeFinder dismisses the finder modal and clears its transient
-// state. The cached index on a.finder stays warm — a future open
-// reuses it.
-func (a *App) closeFinder() {
-	a.finderOpen = false
-	a.finderQuery = nil
-	a.finderCursor = 0
-	a.finderResults = nil
-	a.finderSelected = 0
+	m.refresh(a)
 }
 
 // menuFindFile is the ≡ menu entry that opens the finder. Lives
@@ -102,21 +96,20 @@ func (a *App) hasFinder() bool {
 	return a.finder != nil
 }
 
-// refreshFinderResults re-runs the cached query against the
-// current index. Called on every keystroke and on the rebuilt
-// event so a slow first index doesn't leave the modal showing
-// stale "Indexing…" forever.
-func (a *App) refreshFinderResults() {
+// refresh re-runs the current query against the index. Called on
+// every edit and on the rebuilt event so a slow first index doesn't
+// leave the modal showing stale "Indexing…" forever.
+func (m *finderModal) refresh(a *App) {
 	if a.finder == nil {
-		a.finderResults = nil
+		m.results = nil
 		return
 	}
-	a.finderResults = a.finder.Search(string(a.finderQuery), finderSearchLimit)
-	if a.finderSelected >= len(a.finderResults) {
-		a.finderSelected = len(a.finderResults) - 1
+	m.results = a.finder.Search(m.field.String(), finderSearchLimit)
+	if m.selected >= len(m.results) {
+		m.selected = len(m.results) - 1
 	}
-	if a.finderSelected < 0 {
-		a.finderSelected = 0
+	if m.selected < 0 {
+		m.selected = 0
 	}
 }
 
@@ -135,109 +128,74 @@ func (a *App) invalidateFinder() {
 	})
 }
 
-// handleFinderKey routes keyboard input while the finder modal
-// is open. Most of it is text editing (mirrors handlePromptKey);
-// the finder-specific bits are arrow-key navigation through
-// results and Enter-to-open.
-func (a *App) handleFinderKey(ev *tcell.EventKey) {
+// handleKey routes keyboard input while the finder modal is open.
+// The finder-specific bits are arrow-key navigation through results
+// and Enter-to-open; text editing is the shared textField.
+func (m *finderModal) handleKey(a *App, ev *tcell.EventKey) {
 	switch ev.Key() {
 	case tcell.KeyEsc:
-		a.closeFinder()
+		a.closeModal()
 	case tcell.KeyEnter:
-		a.openSelectedFinderResult()
+		m.openSelected(a)
 	case tcell.KeyUp:
-		if a.finderSelected > 0 {
-			a.finderSelected--
+		if m.selected > 0 {
+			m.selected--
 		}
 	case tcell.KeyDown:
-		if a.finderSelected < len(a.finderResults)-1 {
-			a.finderSelected++
+		if m.selected < len(m.results)-1 {
+			m.selected++
 		}
-	case tcell.KeyLeft:
-		if a.finderCursor > 0 {
-			a.finderCursor--
+	default:
+		if _, edited := m.field.handleKey(ev); edited {
+			m.selected = 0
+			m.refresh(a)
 		}
-	case tcell.KeyRight:
-		if a.finderCursor < len(a.finderQuery) {
-			a.finderCursor++
-		}
-	case tcell.KeyHome:
-		a.finderCursor = 0
-	case tcell.KeyEnd:
-		a.finderCursor = len(a.finderQuery)
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if a.finderCursor > 0 {
-			a.finderQuery = append(a.finderQuery[:a.finderCursor-1], a.finderQuery[a.finderCursor:]...)
-			a.finderCursor--
-			a.finderSelected = 0
-			a.refreshFinderResults()
-		}
-	case tcell.KeyDelete:
-		if a.finderCursor < len(a.finderQuery) {
-			a.finderQuery = append(a.finderQuery[:a.finderCursor], a.finderQuery[a.finderCursor+1:]...)
-			a.finderSelected = 0
-			a.refreshFinderResults()
-		}
-	case tcell.KeyRune:
-		r := ev.Rune()
-		if r < 0x20 {
-			return
-		}
-		next := make([]rune, 0, len(a.finderQuery)+1)
-		next = append(next, a.finderQuery[:a.finderCursor]...)
-		next = append(next, r)
-		next = append(next, a.finderQuery[a.finderCursor:]...)
-		a.finderQuery = next
-		a.finderCursor++
-		a.finderSelected = 0
-		a.refreshFinderResults()
 	}
 }
 
-// handleFinderMouse handles mouse input while the modal is open.
-// Hover highlights the row under the cursor; click opens it.
-// Click outside the modal dismisses.
-func (a *App) handleFinderMouse(x, y int, btn tcell.ButtonMask) {
-	mx, my, mw, mh := a.finderModalRect()
+// handleMouse handles mouse input while the modal is open. Hover
+// highlights the row under the cursor; click opens it. Click outside
+// the modal dismisses.
+func (m *finderModal) handleMouse(a *App, x, y int, btn tcell.ButtonMask) {
+	mx, my, mw, mh := m.rect(a)
 	rowsStart := my + 4
 	row := y - rowsStart
-	if row >= 0 && row < len(a.finderResults) && x >= mx && x < mx+mw {
+	if row >= 0 && row < len(m.results) && x >= mx && x < mx+mw {
 		// Hover highlight always tracks the mouse — same behaviour
 		// the action menu uses, so users can scrub through results
 		// without clicking.
-		a.finderSelected = row
+		m.selected = row
 	}
 	if btn&tcell.Button1 == 0 {
 		return
 	}
 	if x < mx || x >= mx+mw || y < my || y >= my+mh {
-		a.closeFinder()
+		a.closeModal()
 		return
 	}
-	if row >= 0 && row < len(a.finderResults) {
-		a.finderSelected = row
-		a.openSelectedFinderResult()
+	if row >= 0 && row < len(m.results) {
+		m.selected = row
+		m.openSelected(a)
 	}
 }
 
-// openSelectedFinderResult opens the result at finderSelected.
-// Closes the modal, then resolves the relative path against the
-// project root and opens the file. Silent no-op when the result
-// list is empty (e.g. the user mashed Enter on a no-match query).
-func (a *App) openSelectedFinderResult() {
-	if a.finderSelected < 0 || a.finderSelected >= len(a.finderResults) {
+// openSelected opens the highlighted result. Closes the modal, then
+// resolves the relative path against the project root and opens the
+// file. Silent no-op when the result list is empty (e.g. the user
+// mashed Enter on a no-match query).
+func (m *finderModal) openSelected(a *App) {
+	if m.selected < 0 || m.selected >= len(m.results) {
 		return
 	}
-	rel := a.finderResults[a.finderSelected].Path
-	a.closeFinder()
+	rel := m.results[m.selected].Path
+	a.closeModal()
 	abs := filepath.Join(a.rootDir, rel)
 	a.openFile(abs)
 }
 
-// finderModalRect returns the on-screen rectangle of the finder
-// modal. Sized to fit a healthy result list while leaving margins
-// on small terminals.
-func (a *App) finderModalRect() (x, y, w, h int) {
+// rect returns the on-screen rectangle of the finder modal. Sized to
+// fit a healthy result list while leaving margins on small terminals.
+func (m *finderModal) rect(a *App) (x, y, w, h int) {
 	w = finderModalMaxWidth
 	if w > a.width-4 {
 		w = a.width - 4
@@ -262,7 +220,7 @@ func (a *App) finderModalRect() (x, y, w, h int) {
 	return
 }
 
-// drawFinder paints the modal: title + Esc hint, input field with
+// draw paints the modal: title + Esc hint, input field with
 // match-count tail, then either a "Indexing…" line or the result
 // rows with highlighted match characters.
 //
@@ -274,44 +232,15 @@ func (a *App) finderModalRect() (x, y, w, h int) {
 //	3     input          [ query…           42/12345 ]
 //	4..N  result rows
 //	N+1   bottom border
-func (a *App) drawFinder() {
-	mx, my, mw, mh := a.finderModalRect()
-	bg := a.theme.LineHL
-	bgStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Text)
-	borderStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Subtle)
-	titleStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Accent).Bold(true)
-	mutedStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Muted)
-	hitStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.FindCurrent).Bold(true)
+func (m *finderModal) draw(a *App) {
+	mx, my, mw, mh := m.rect(a)
+	c := a.chrome()
+	hitStyle := tcell.StyleDefault.Background(c.bg).Foreground(a.theme.FindCurrent).Bold(true)
+	c.drawFrame(a.screen, mx, my, mw, mh, "Find file")
 
-	fillRect(a.screen, mx, my, mw, mh, bgStyle)
-	drawBorder(a.screen, mx, my, mw, mh, borderStyle)
-	drawHDivider(a.screen, mx, my+2, mw, borderStyle)
-
-	drawAt(a.screen, mx+1, my+1, " Find file", titleStyle)
-	hint := "esc "
-	drawAt(a.screen, mx+mw-1-runeLen(hint), my+1, hint, mutedStyle)
-
-	// Input row.
-	inputBg := a.theme.BG
-	inputStyle := tcell.StyleDefault.Background(inputBg).Foreground(a.theme.Text)
-	fieldStart := mx + 3
-	fieldEnd := mx + mw - 12 // leave room for the count on the right
-	fieldWidth := fieldEnd - fieldStart
-	a.adjustFinderScroll(fieldWidth)
-	for cx := fieldStart - 1; cx <= fieldEnd; cx++ {
-		a.screen.SetContent(cx, my+3, ' ', nil, inputStyle)
-	}
-	for i := 0; i < fieldWidth; i++ {
-		idx := a.finderScroll + i
-		if idx >= len(a.finderQuery) {
-			break
-		}
-		a.screen.SetContent(fieldStart+i, my+3, a.finderQuery[idx], nil, inputStyle)
-	}
-	caret := fieldStart + (a.finderCursor - a.finderScroll)
-	if caret >= fieldStart && caret <= fieldEnd {
-		a.screen.ShowCursor(caret, my+3)
-	}
+	// Input row — the right side leaves room for the count tail.
+	inputStyle := tcell.StyleDefault.Background(a.theme.BG).Foreground(a.theme.Text)
+	m.field.draw(a.screen, my+3, mx+3, mx+mw-12, inputStyle, true)
 
 	// Match count tail.
 	state, total, viaGit := finder.StateIdle, 0, false
@@ -327,9 +256,9 @@ func (a *App) drawFinder() {
 	case finder.StateErrored:
 		tail = "index err "
 	case finder.StateReady:
-		tail = countLabel(len(a.finderResults), total) + " "
+		tail = countLabel(len(m.results), total) + " "
 	}
-	drawAt(a.screen, mx+mw-1-runeLen(tail), my+3, tail, mutedStyle)
+	drawAt(a.screen, mx+mw-1-runeLen(tail), my+3, tail, c.muted)
 
 	// Result rows. We paint the visible window (no scrolling support
 	// in v1 — we just cap at finderResultsVisible). When the query
@@ -339,7 +268,7 @@ func (a *App) drawFinder() {
 	if rowsCap > finderResultsVisible {
 		rowsCap = finderResultsVisible
 	}
-	visible := a.finderResults
+	visible := m.results
 	if len(visible) > rowsCap {
 		visible = visible[:rowsCap]
 	}
@@ -349,27 +278,25 @@ func (a *App) drawFinder() {
 			// Clear unused rows so a previous query's tail doesn't
 			// linger when results shrink.
 			for cx := mx + 1; cx < mx+mw-1; cx++ {
-				a.screen.SetContent(cx, ry, ' ', nil, bgStyle)
+				a.screen.SetContent(cx, ry, ' ', nil, c.bgSt)
 			}
 			continue
 		}
-		a.drawFinderRow(mx, ry, mw, visible[i], i == a.finderSelected, hitStyle, mutedStyle, bg)
+		m.drawRow(a, mx, ry, mw, visible[i], i == m.selected, hitStyle, c.muted, c.bg)
 	}
 }
 
-// drawFinderRow paints one result line: the path, with matched
-// runes highlighted via hitStyle, and the row background flipped
-// to LineHL when it's the selected row. dirname is dimmed so the
-// basename pops — same trick the editor's tab bar uses to make
-// the file name the visual anchor.
-func (a *App) drawFinderRow(mx, ry, mw int, r finder.Result, selected bool, hitStyle, mutedStyle tcell.Style, modalBG tcell.Color) {
+// drawRow paints one result line: the path, with matched runes
+// highlighted via hitStyle, and the row background flipped when it's
+// the selected row. The dirname is dimmed so the basename pops — same
+// trick the editor's tab bar uses to make the file name the visual
+// anchor.
+func (m *finderModal) drawRow(a *App, mx, ry, mw int, r finder.Result, selected bool, hitStyle, mutedStyle tcell.Style, modalBG tcell.Color) {
 	rowBG := modalBG
-	rowFG := a.theme.Text
 	if selected {
 		rowBG = a.theme.BG
-		rowFG = a.theme.Text
 	}
-	rowStyle := tcell.StyleDefault.Background(rowBG).Foreground(rowFG)
+	rowStyle := tcell.StyleDefault.Background(rowBG).Foreground(a.theme.Text)
 	hitOnRow := hitStyle.Background(rowBG)
 	mutedOnRow := mutedStyle.Background(rowBG)
 
@@ -388,8 +315,8 @@ func (a *App) drawFinderRow(mx, ry, mw int, r finder.Result, selected bool, hitS
 		}
 	}
 	matchSet := map[int]bool{}
-	for _, m := range r.MatchedIndexes {
-		matchSet[m] = true
+	for _, hit := range r.MatchedIndexes {
+		matchSet[hit] = true
 	}
 
 	startCol := mx + 2
@@ -406,26 +333,6 @@ func (a *App) drawFinderRow(mx, ry, mw int, r finder.Result, selected bool, hitS
 			st = hitOnRow
 		}
 		a.screen.SetContent(startCol+i, ry, ch, nil, st)
-	}
-}
-
-// adjustFinderScroll keeps the input cursor visible by sliding
-// finderScroll left or right within the input field. Same shape
-// as adjustPromptScroll — pulled into its own method so the two
-// can evolve independently if either modal grows new behaviours.
-func (a *App) adjustFinderScroll(width int) {
-	if width <= 0 {
-		a.finderScroll = 0
-		return
-	}
-	if a.finderCursor < a.finderScroll {
-		a.finderScroll = a.finderCursor
-	}
-	if a.finderCursor-a.finderScroll >= width {
-		a.finderScroll = a.finderCursor - width + 1
-	}
-	if a.finderScroll < 0 {
-		a.finderScroll = 0
 	}
 }
 
@@ -448,10 +355,7 @@ func countLabel(shown, total int) string {
 // tail. strconv would work fine; keeping a local helper avoids
 // pulling strconv into a UI file that otherwise doesn't need it.
 func itoa(n int) string {
-	if n < 0 {
-		return "0"
-	}
-	if n == 0 {
+	if n <= 0 {
 		return "0"
 	}
 	var buf [20]byte

@@ -28,7 +28,7 @@ const gutterWidth = 6
 // the per-tab view state (scroll position, cursor, selection anchor), the
 // cached syntax-highlight styles, and a dirty flag.
 type Tab struct {
-	Path       string  // Empty for an unsaved/scratch tab.
+	Path       string // Empty for an unsaved/scratch tab.
 	Buffer     *Buffer
 	Cursor     Position // Where new typed text appears.
 	Anchor     Position // Selection anchor; equals Cursor when nothing is selected.

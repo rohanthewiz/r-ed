@@ -5,7 +5,7 @@
 // Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 // =============================================================================
 
-// formmodal.go renders the third secondary-modal type — a vertical form
+// formmodal.go renders the multi-field secondary modal — a vertical form
 // with one row per prompt. Custom actions opt in by listing prompts in
 // their config; before the action's shell command runs, the editor opens
 // this modal, lets the user fill in each field, and only on Submit does
@@ -14,8 +14,7 @@
 //
 // Layout intentionally mirrors the prompt modal it lives next to — same
 // border, divider, "esc" hint, button row — so the two read as siblings.
-// What's different: a flexible-height field stack and per-row focus
-// state, both keyed on the prompt slice the caller passed to openForm.
+// What's different: a flexible-height field stack and per-row focus state.
 
 package app
 
@@ -28,7 +27,7 @@ import (
 // Layout constants for the form modal. The width matches the prompt
 // modal so the visual rhythm of the editor's secondary surfaces stays
 // consistent, and the height grows with the prompt count rather than
-// being pinned — see formModalRect for the math.
+// being pinned — see rect for the math.
 const (
 	formModalWidth = 60
 
@@ -44,97 +43,88 @@ const (
 	formChromeHeight = 7
 )
 
+// formRow is the live state of one prompt row: the shared textField for
+// text prompts, or the selected option index for select prompts.
+type formRow struct {
+	prompt customactions.Prompt
+	field  textField // text rows only
+	selIdx int       // select rows only
+}
+
+// formModal collects the values for a custom action's prompts. values
+// is the canonical (Prompt.Key → value) store, updated on every edit so
+// render and submit read the same state. callback receives the map only
+// on Submit; Cancel discards everything.
+type formModal struct {
+	title    string
+	rows     []formRow
+	values   map[string]string
+	focus    int // which prompt row owns the keyboard
+	callback func(*App, map[string]string)
+}
+
 // openForm displays the form modal for a custom action. The caller
 // passes the prompt list straight from customactions.Action — we
 // expand each Default through the editor-state vars here so the
-// modal sees only fully-resolved strings. callback receives the
-// per-key value map only on Submit; Cancel discards everything.
+// modal sees only fully-resolved strings.
 //
-// All slice/map state is rebuilt from prompts so a previous form
-// can't leak data into the next one — that's a quiet but real
-// problem the dirty/confirm flows have had to fix the hard way.
+// All row state is rebuilt from prompts so a previous form can't leak
+// data into the next one.
 func (a *App) openForm(title string, prompts []customactions.Prompt, callback func(*App, map[string]string)) {
 	if len(prompts) == 0 {
 		return
 	}
-	a.closeAllModals()
-
 	vars := a.captureActionVars()
 
-	a.formOpen = true
-	a.formTitle = title
-	a.formPrompts = append([]customactions.Prompt(nil), prompts...)
-	a.formValues = make(map[string]string, len(prompts))
-	a.formText = make([][]rune, len(prompts))
-	a.formCursor = make([]int, len(prompts))
-	a.formScroll = make([]int, len(prompts))
-	a.formFocus = 0
-	a.formCallback = callback
-
+	m := &formModal{
+		title:    title,
+		rows:     make([]formRow, len(prompts)),
+		values:   make(map[string]string, len(prompts)),
+		callback: callback,
+	}
 	for i, p := range prompts {
+		row := formRow{prompt: p}
 		switch p.Type {
 		case customactions.PromptText:
 			val := vars.expand(p.Default)
-			a.formText[i] = []rune(val)
-			a.formCursor[i] = len(a.formText[i])
-			a.formValues[p.Key] = val
+			row.field = newTextField(val)
+			m.values[p.Key] = val
 		case customactions.PromptSelect:
 			// Select state is the option index. Default matches by
-			// equality against an option string when present;
-			// otherwise we land on the first option so the user
-			// always sees a valid choice on open.
-			idx := 0
+			// equality against an option string when present; otherwise
+			// we land on the first option so the user always sees a
+			// valid choice on open.
 			expanded := vars.expand(p.Default)
 			for j, opt := range p.Options {
 				if opt == expanded {
-					idx = j
+					row.selIdx = j
 					break
 				}
 			}
-			a.formCursor[i] = idx
-			a.formValues[p.Key] = p.Options[idx]
+			m.values[p.Key] = p.Options[row.selIdx]
 		}
+		m.rows[i] = row
 	}
+	a.openModal(m)
 }
 
-// formSubmit hands the collected (Key, Value) map back to the caller
-// and closes the modal. Empty fields are still passed through — the
-// shell command author chooses whether to treat empty as "skip" or as
-// an error. Forcing non-empty here would block legitimate cases like
+// submit hands the collected (Key, Value) map back to the caller and
+// closes the modal. Empty fields are still passed through — the shell
+// command author chooses whether to treat empty as "skip" or as an
+// error. Forcing non-empty here would block legitimate cases like
 // "REMOTE_OPTS defaults to nothing."
-func (a *App) formSubmit() {
-	if !a.formOpen {
-		return
-	}
-	cb := a.formCallback
-	values := a.formValues
-	a.closeAllModals()
-	if cb != nil {
-		cb(a, values)
+func (m *formModal) submit(a *App) {
+	a.closeModal()
+	if m.callback != nil {
+		m.callback(a, m.values)
 	}
 }
 
-// formCancel dismisses the form without invoking the callback.
-func (a *App) formCancel() {
-	a.closeAllModals()
-}
-
-// formModalRect computes the on-screen rectangle. Height grows with
-// the prompt count — 4 prompts is 4*2 + 7 = 15 rows — so a tall form
-// in a small terminal still gets clamped to (0,0) instead of falling
-// off the top.
-func (a *App) formModalRect() (x, y, w, h int) {
-	w = formModalWidth
-	h = formChromeHeight + formRowHeight*max1(len(a.formPrompts))
-	x = (a.width - w) / 2
-	y = (a.height - h) / 2
-	if x < 0 {
-		x = 0
-	}
-	if y < 0 {
-		y = 0
-	}
-	return
+// rect computes the on-screen rectangle. Height grows with the prompt
+// count — 4 prompts is 4*2 + 7 = 15 rows — and the centering clamps to
+// (0,0) so a tall form in a small terminal still starts on screen.
+func (m *formModal) rect(a *App) (x, y, w, h int) {
+	return a.centeredRect(formModalWidth, formChromeHeight+formRowHeight*max1(len(m.rows)))
 }
 
 // max1 keeps the height calc at least one row tall even if a buggy
@@ -148,328 +138,200 @@ func max1(n int) int {
 	return n
 }
 
-// formButtonRects returns the (Submit, Cancel) click rectangles in
-// absolute screen coordinates. Pulled out so handleFormMouse and
-// drawForm can't drift on layout — both compute hit-tests / draws
-// against the same numbers.
-func (a *App) formButtonRects() (cancelX, submitX, btnY, cancelW, submitW int) {
-	mx, my, mw, mh := a.formModalRect()
-	cancelW = 10 // [ Cancel ]
-	submitW = 10 // [ Submit ]
-	cancelX = mx + 4
-	submitX = mx + mw - submitW - 4
-	btnY = my + mh - 3
-	_ = mh
-	return
+// buttons returns the (Cancel, Submit) button rects — the single
+// geometry source for draw and mouse hit-testing.
+func (m *formModal) buttons(a *App) (cancel, submit btnRect) {
+	mx, my, mw, mh := m.rect(a)
+	btnY := my + mh - 3
+	return btnRect{x: mx + 4, y: btnY, w: 10}, btnRect{x: mx + mw - 10 - 4, y: btnY, w: 10}
 }
 
-// drawForm renders the modal: title, divider, one (label, input)
-// pair per prompt, and a [ Cancel ] / [ Submit ] button row. The
-// focused row's input is highlighted; selects show the current
-// option with chevrons, text rows show their value with a caret.
-func (a *App) drawForm() {
-	mx, my, mw, mh := a.formModalRect()
+// rowSpan returns the label row, input row, and the input field's
+// [start, end) columns for prompt row i.
+func (m *formModal) rowSpan(a *App, i int) (labelRow, inputRow, fieldStart, fieldEnd int) {
+	mx, my, mw, _ := m.rect(a)
+	labelRow = my + 3 + i*formRowHeight
+	return labelRow, labelRow + 1, mx + 3, mx + mw - 3
+}
 
-	bg := a.theme.LineHL
-	bgStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Text)
-	borderStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Subtle)
-	titleStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Accent).Bold(true)
-	mutedStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Muted)
-
-	fillRect(a.screen, mx, my, mw, mh, bgStyle)
-	drawBorder(a.screen, mx, my, mw, mh, borderStyle)
-	drawHDivider(a.screen, mx, my+2, mw, borderStyle)
-
-	drawAt(a.screen, mx+1, my+1, " "+a.formTitle, titleStyle)
-	hint := "esc "
-	drawAt(a.screen, mx+mw-1-runeLen(hint), my+1, hint, mutedStyle)
+// draw renders the modal: title, divider, one (label, input) pair per
+// prompt, and a [ Cancel ] / [ Submit ] button row. The focused row's
+// input is highlighted; selects show the current option with chevrons,
+// text rows show their value with a caret.
+func (m *formModal) draw(a *App) {
+	mx, my, mw, mh := m.rect(a)
+	c := a.chrome()
+	c.drawFrame(a.screen, mx, my, mw, mh, m.title)
 
 	a.screen.HideCursor()
-	for i, p := range a.formPrompts {
-		rowY := my + 3 + i*formRowHeight
-		labelRow := rowY
-		inputRow := rowY + 1
+	for i := range m.rows {
+		row := &m.rows[i]
+		p := row.prompt
+		labelRow, inputRow, fieldStart, fieldEnd := m.rowSpan(a, i)
+		focused := i == m.focus
 
-		labelStyle := mutedStyle
-		if i == a.formFocus {
-			labelStyle = titleStyle
+		labelStyle := c.muted
+		if focused {
+			labelStyle = c.title
 		}
 		drawAt(a.screen, mx+2, labelRow, p.Label, labelStyle)
 
-		fieldStart := mx + 3
-		fieldEnd := mx + mw - 3
-		fieldWidth := fieldEnd - fieldStart
-
 		inputBg := a.theme.BG
-		if i == a.formFocus {
+		if focused {
 			inputBg = a.theme.Subtle
 		}
 		inputStyle := tcell.StyleDefault.Background(inputBg).Foreground(a.theme.Text)
-		for cx := fieldStart - 1; cx <= fieldEnd; cx++ {
-			a.screen.SetContent(cx, inputRow, ' ', nil, inputStyle)
-		}
 
 		switch p.Type {
 		case customactions.PromptText:
-			a.adjustFormScroll(i, fieldWidth)
-			text := a.formText[i]
-			cursor := a.formCursor[i]
-			scroll := a.formScroll[i]
-			for j := 0; j < fieldWidth; j++ {
-				idx := scroll + j
-				if idx >= len(text) {
-					break
-				}
-				a.screen.SetContent(fieldStart+j, inputRow, text[idx], nil, inputStyle)
-			}
-			if i == a.formFocus {
-				caret := fieldStart + (cursor - scroll)
-				if caret >= fieldStart && caret <= fieldEnd {
-					a.screen.ShowCursor(caret, inputRow)
-				}
-			}
+			row.field.draw(a.screen, inputRow, fieldStart, fieldEnd, inputStyle, focused)
 		case customactions.PromptSelect:
-			// Render as "‹  option  ›" centered-ish. The chevrons
-			// double as click targets via handleFormMouse; we offset
-			// them inward from the field edges so they don't sit
-			// on top of the input border.
+			// Render as "‹  option  ›" centered-ish. The chevrons double
+			// as click targets via handleMouse; we offset them inward
+			// from the field edges so they don't sit on top of the
+			// input border.
+			for cx := fieldStart - 1; cx <= fieldEnd; cx++ {
+				a.screen.SetContent(cx, inputRow, ' ', nil, inputStyle)
+			}
 			drawAt(a.screen, fieldStart, inputRow, "<", inputStyle)
 			drawAt(a.screen, fieldEnd-1, inputRow, ">", inputStyle)
 			opt := ""
-			if idx := a.formCursor[i]; idx >= 0 && idx < len(p.Options) {
-				opt = p.Options[idx]
+			if row.selIdx >= 0 && row.selIdx < len(p.Options) {
+				opt = p.Options[row.selIdx]
 			}
-			startX := fieldStart + (fieldWidth-runeLen(opt))/2
+			startX := fieldStart + (fieldEnd-fieldStart-runeLen(opt))/2
 			drawAt(a.screen, startX, inputRow, opt, inputStyle)
 		}
 	}
 
-	cancelX, submitX, btnY, _, _ := a.formButtonRects()
-	drawButton(a.screen, cancelX, btnY, "[ Cancel ]", bg, a.theme.Text, false)
-	drawButton(a.screen, submitX, btnY, "[ Submit ]", bg, a.theme.Accent, true)
+	cancel, submit := m.buttons(a)
+	drawButton(a.screen, cancel.x, cancel.y, "[ Cancel ]", c.bg, a.theme.Text, false)
+	drawButton(a.screen, submit.x, submit.y, "[ Submit ]", c.bg, a.theme.Accent, true)
 }
 
-// adjustFormScroll keeps the caret within the visible window of a
-// text row's input field. Mirror of adjustPromptScroll; lives here
-// because the form's per-row scroll state is its own slice.
-func (a *App) adjustFormScroll(i, width int) {
-	if width <= 0 {
-		a.formScroll[i] = 0
-		return
-	}
-	cursor := a.formCursor[i]
-	scroll := a.formScroll[i]
-	if cursor < scroll {
-		scroll = cursor
-	}
-	if cursor >= scroll+width {
-		scroll = cursor - width + 1
-	}
-	if scroll < 0 {
-		scroll = 0
-	}
-	a.formScroll[i] = scroll
-}
-
-// handleFormKey routes keystrokes while the form is open. Tab moves
-// focus forward, Shift+Tab back. On a text row, printable runes /
-// arrow keys / Backspace edit the buffer. On a select row, Left /
-// Right cycle options. Enter on the last row submits; Enter on any
-// other row advances focus (so a user racing through the form can
-// hold Tab/Enter to fill it out).
-func (a *App) handleFormKey(ev *tcell.EventKey) {
-	if !a.formOpen || len(a.formPrompts) == 0 {
+// handleKey routes keystrokes while the form is open. Tab moves focus
+// forward, Shift+Tab back. On a text row, printable runes / arrow keys /
+// Backspace edit the buffer. On a select row, Left / Right cycle
+// options. Enter on the last row submits; Enter on any other row
+// advances focus (so a user racing through the form can hold Tab/Enter
+// to fill it out).
+func (m *formModal) handleKey(a *App, ev *tcell.EventKey) {
+	if len(m.rows) == 0 {
 		return
 	}
 	switch ev.Key() {
 	case tcell.KeyEsc:
-		a.formCancel()
+		a.closeModal()
 		return
 	case tcell.KeyTab:
-		a.formMoveFocus(+1)
+		m.moveFocus(+1)
 		return
 	case tcell.KeyBacktab:
-		a.formMoveFocus(-1)
+		m.moveFocus(-1)
+		return
+	case tcell.KeyEnter:
+		if m.focus == len(m.rows)-1 {
+			m.submit(a)
+			return
+		}
+		m.moveFocus(+1)
 		return
 	}
 
-	i := a.formFocus
-	p := a.formPrompts[i]
-
-	switch p.Type {
+	row := &m.rows[m.focus]
+	switch row.prompt.Type {
 	case customactions.PromptSelect:
-		a.handleFormSelectKey(ev, i, p)
+		m.handleSelectKey(ev, row)
 	case customactions.PromptText:
-		a.handleFormTextKey(ev, i, p)
+		if _, edited := row.field.handleKey(ev); edited {
+			m.values[row.prompt.Key] = row.field.String()
+		}
 	}
 }
 
-// handleFormSelectKey advances or retreats the select's option index
-// on Left/Right; Enter advances focus or submits on the last row.
-// Pulled out because text-row handling is meaningfully different
-// (rune insertion, caret moves) and inlining both would make the
-// switch in handleFormKey hard to scan.
-func (a *App) handleFormSelectKey(ev *tcell.EventKey, i int, p customactions.Prompt) {
+// handleSelectKey advances or retreats the select's option index on
+// Left/Up and Right/Down, wrapping at the ends, and mirrors the choice
+// into values so render and submit stay in sync.
+func (m *formModal) handleSelectKey(ev *tcell.EventKey, row *formRow) {
+	p := row.prompt
 	switch ev.Key() {
 	case tcell.KeyLeft, tcell.KeyUp:
-		idx := a.formCursor[i] - 1
-		if idx < 0 {
-			idx = len(p.Options) - 1
+		row.selIdx--
+		if row.selIdx < 0 {
+			row.selIdx = len(p.Options) - 1
 		}
-		a.formCursor[i] = idx
-		a.formValues[p.Key] = p.Options[idx]
+		m.values[p.Key] = p.Options[row.selIdx]
 	case tcell.KeyRight, tcell.KeyDown:
-		idx := (a.formCursor[i] + 1) % len(p.Options)
-		a.formCursor[i] = idx
-		a.formValues[p.Key] = p.Options[idx]
-	case tcell.KeyEnter:
-		if i == len(a.formPrompts)-1 {
-			a.formSubmit()
-			return
-		}
-		a.formMoveFocus(+1)
+		row.selIdx = (row.selIdx + 1) % len(p.Options)
+		m.values[p.Key] = p.Options[row.selIdx]
 	}
 }
 
-// handleFormTextKey runs the editor primitives for the focused text
-// row: rune insert, Backspace/Delete, Home/End/Left/Right caret
-// motion, and Enter as either "advance focus" or "submit on last
-// row." formValues is updated on every edit so the modal-side state
-// is the single source of truth for both render and submit.
-func (a *App) handleFormTextKey(ev *tcell.EventKey, i int, p customactions.Prompt) {
-	text := a.formText[i]
-	cursor := a.formCursor[i]
-	switch ev.Key() {
-	case tcell.KeyEnter:
-		if i == len(a.formPrompts)-1 {
-			a.formSubmit()
-			return
-		}
-		a.formMoveFocus(+1)
-	case tcell.KeyLeft:
-		if cursor > 0 {
-			a.formCursor[i] = cursor - 1
-		}
-	case tcell.KeyRight:
-		if cursor < len(text) {
-			a.formCursor[i] = cursor + 1
-		}
-	case tcell.KeyHome:
-		a.formCursor[i] = 0
-	case tcell.KeyEnd:
-		a.formCursor[i] = len(text)
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if cursor > 0 {
-			text = append(text[:cursor-1], text[cursor:]...)
-			a.formText[i] = text
-			a.formCursor[i] = cursor - 1
-			a.formValues[p.Key] = string(text)
-		}
-	case tcell.KeyDelete:
-		if cursor < len(text) {
-			text = append(text[:cursor], text[cursor+1:]...)
-			a.formText[i] = text
-			a.formValues[p.Key] = string(text)
-		}
-	case tcell.KeyRune:
-		r := ev.Rune()
-		if r < 0x20 {
-			return
-		}
-		next := make([]rune, 0, len(text)+1)
-		next = append(next, text[:cursor]...)
-		next = append(next, r)
-		next = append(next, text[cursor:]...)
-		a.formText[i] = next
-		a.formCursor[i] = cursor + 1
-		a.formValues[p.Key] = string(next)
-	}
-}
-
-// formMoveFocus shifts the focused row by delta and wraps. Wrapping
-// matches every list-with-keyboard surface in the editor (action
-// menu, finder, this modal) so users never hit a "stuck at the top"
-// surprise.
-func (a *App) formMoveFocus(delta int) {
-	n := len(a.formPrompts)
+// moveFocus shifts the focused row by delta and wraps. Wrapping matches
+// every list-with-keyboard surface in the editor (action menu, finder,
+// this modal) so users never hit a "stuck at the top" surprise.
+func (m *formModal) moveFocus(delta int) {
+	n := len(m.rows)
 	if n == 0 {
 		return
 	}
-	i := (a.formFocus + delta) % n
+	i := (m.focus + delta) % n
 	if i < 0 {
 		i += n
 	}
-	a.formFocus = i
+	m.focus = i
 }
 
-// handleFormMouse routes mouse clicks: a click on a prompt row's
-// label or input area moves focus there; clicks on a select's < or
-// > chevrons cycle the option; clicks on Submit / Cancel resolve
-// the modal; clicks outside dismiss it.
-func (a *App) handleFormMouse(x, y int, btn tcell.ButtonMask) {
+// handleMouse routes mouse clicks: a click on a prompt row's label or
+// input area moves focus there; clicks on a select's < or > chevrons
+// cycle the option; clicks on Submit / Cancel resolve the modal; clicks
+// outside dismiss it.
+func (m *formModal) handleMouse(a *App, x, y int, btn tcell.ButtonMask) {
 	if btn&tcell.Button1 == 0 {
 		return
 	}
-	mx, my, mw, mh := a.formModalRect()
+	mx, my, mw, mh := m.rect(a)
 	if x < mx || x >= mx+mw || y < my || y >= my+mh {
-		a.formCancel()
+		a.closeModal()
 		return
 	}
 
-	cancelX, submitX, btnY, cancelW, submitW := a.formButtonRects()
-	if y == btnY {
-		switch {
-		case x >= cancelX && x < cancelX+cancelW:
-			a.formCancel()
-			return
-		case x >= submitX && x < submitX+submitW:
-			a.formSubmit()
-			return
-		}
+	cancel, submit := m.buttons(a)
+	switch {
+	case cancel.contains(x, y):
+		a.closeModal()
+		return
+	case submit.contains(x, y):
+		m.submit(a)
+		return
 	}
 
-	for i, p := range a.formPrompts {
-		rowY := my + 3 + i*formRowHeight
-		inputRow := rowY + 1
-		if y == rowY || y == inputRow {
-			a.formFocus = i
+	for i := range m.rows {
+		row := &m.rows[i]
+		p := row.prompt
+		labelRow, inputRow, fieldStart, fieldEnd := m.rowSpan(a, i)
+		if y != labelRow && y != inputRow {
+			continue
+		}
+		m.focus = i
 
-			if y == inputRow && p.Type == customactions.PromptSelect {
-				fieldStart := mx + 3
-				fieldEnd := mx + mw - 3
-				switch x {
-				case fieldStart:
-					idx := a.formCursor[i] - 1
-					if idx < 0 {
-						idx = len(p.Options) - 1
-					}
-					a.formCursor[i] = idx
-					a.formValues[p.Key] = p.Options[idx]
-					return
-				case fieldEnd - 1:
-					idx := (a.formCursor[i] + 1) % len(p.Options)
-					a.formCursor[i] = idx
-					a.formValues[p.Key] = p.Options[idx]
-					return
+		if y == inputRow && p.Type == customactions.PromptSelect {
+			switch x {
+			case fieldStart:
+				row.selIdx--
+				if row.selIdx < 0 {
+					row.selIdx = len(p.Options) - 1
 				}
-			}
-
-			if y == inputRow && p.Type == customactions.PromptText {
-				fieldStart := mx + 3
-				fieldEnd := mx + mw - 3
-				if x >= fieldStart && x < fieldEnd {
-					localCol := x - fieldStart
-					target := a.formScroll[i] + localCol
-					if target < 0 {
-						target = 0
-					}
-					if target > len(a.formText[i]) {
-						target = len(a.formText[i])
-					}
-					a.formCursor[i] = target
-				}
+				m.values[p.Key] = p.Options[row.selIdx]
+			case fieldEnd - 1:
+				row.selIdx = (row.selIdx + 1) % len(p.Options)
+				m.values[p.Key] = p.Options[row.selIdx]
 			}
 			return
 		}
+		if y == inputRow && p.Type == customactions.PromptText {
+			row.field.clickAt(fieldStart, fieldEnd, x)
+		}
+		return
 	}
 }

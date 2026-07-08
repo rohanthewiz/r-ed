@@ -53,7 +53,7 @@ func TestLoadGitStatus_EmptyRoot(t *testing.T) {
 func TestLoadGitStatus_CleanRepo(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t)
-	writeFileT(t,filepath.Join(repo, "a.txt"), "hello")
+	writeFileT(t, filepath.Join(repo, "a.txt"), "hello")
 	gitRun(t, repo, "add", "a.txt")
 	gitRun(t, repo, "commit", "-m", "init")
 
@@ -139,16 +139,16 @@ func TestLoadGitStatus_FindsModifiedAndUntracked(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t)
 
-	writeFileT(t,filepath.Join(repo, "tracked.txt"), "v1")
+	writeFileT(t, filepath.Join(repo, "tracked.txt"), "v1")
 	gitRun(t, repo, "add", "tracked.txt")
 	gitRun(t, repo, "commit", "-m", "init")
 
 	// Modify the tracked file (worktree change).
-	writeFileT(t,filepath.Join(repo, "tracked.txt"), "v2")
+	writeFileT(t, filepath.Join(repo, "tracked.txt"), "v2")
 	// Brand-new untracked file.
-	writeFileT(t,filepath.Join(repo, "untracked.txt"), "fresh")
+	writeFileT(t, filepath.Join(repo, "untracked.txt"), "fresh")
 	// Staged-but-uncommitted.
-	writeFileT(t,filepath.Join(repo, "staged.txt"), "added")
+	writeFileT(t, filepath.Join(repo, "staged.txt"), "added")
 	gitRun(t, repo, "add", "staged.txt")
 
 	st := loadGitStatus(repo)
@@ -175,14 +175,14 @@ func TestLoadGitStatus_FromSubdirectory(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeFileT(t,filepath.Join(sub, "inside.txt"), "x")
-	writeFileT(t,filepath.Join(repo, "outside.txt"), "y")
+	writeFileT(t, filepath.Join(sub, "inside.txt"), "x")
+	writeFileT(t, filepath.Join(repo, "outside.txt"), "y")
 	gitRun(t, repo, "add", ".")
 	gitRun(t, repo, "commit", "-m", "init")
 
 	// Mutate both files so they appear dirty.
-	writeFileT(t,filepath.Join(sub, "inside.txt"), "x2")
-	writeFileT(t,filepath.Join(repo, "outside.txt"), "y2")
+	writeFileT(t, filepath.Join(sub, "inside.txt"), "x2")
+	writeFileT(t, filepath.Join(repo, "outside.txt"), "y2")
 
 	st := loadGitStatus(sub)
 	if !st.IsRepo {
@@ -273,14 +273,14 @@ func TestParsePorcelain_BasicCases(t *testing.T) {
 // rather than dropping the path entirely.
 func TestUnquotePath_Variants(t *testing.T) {
 	cases := map[string]string{
-		`plain.txt`:           `plain.txt`,
-		`"quoted.txt"`:        `quoted.txt`,
-		`"with space.txt"`:    `with space.txt`,
-		`"escaped\nnewline"`:  "escaped\nnewline",
-		`""`:                  ``,
-		`   spaced.txt   `:    `spaced.txt`,
-		``:                    ``,
-		`"unterminated`:       `"unterminated`, // malformed → raw fallback
+		`plain.txt`:          `plain.txt`,
+		`"quoted.txt"`:       `quoted.txt`,
+		`"with space.txt"`:   `with space.txt`,
+		`"escaped\nnewline"`: "escaped\nnewline",
+		`""`:                 ``,
+		`   spaced.txt   `:   `spaced.txt`,
+		``:                   ``,
+		`"unterminated`:      `"unterminated`, // malformed → raw fallback
 	}
 	for in, want := range cases {
 		if got := unquotePath(in); got != want {

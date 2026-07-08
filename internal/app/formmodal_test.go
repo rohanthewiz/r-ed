@@ -36,18 +36,18 @@ func scpPrompts() []customactions.Prompt {
 func TestOpenForm_ResolvesDefaults(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openForm("Copy from remote", scpPrompts(), func(*App, map[string]string) {})
-	if !a.formOpen {
+	if formOf(a) == nil {
 		t.Fatal("form should be open")
 	}
-	got := a.formValues["DEST_DIR"]
+	got := formOf(a).values["DEST_DIR"]
 	if got == "" || got == "${ACTIVE_FOLDER}" {
 		t.Fatalf("DEST_DIR default not expanded, got %q", got)
 	}
 	// Select prompts initialise to the matching option, or the first
 	// option when no Default was provided. HOST has no Default so we
 	// should land on "cascade".
-	if a.formValues["HOST"] != "cascade" {
-		t.Errorf("HOST initial value = %q, want %q", a.formValues["HOST"], "cascade")
+	if formOf(a).values["HOST"] != "cascade" {
+		t.Errorf("HOST initial value = %q, want %q", formOf(a).values["HOST"], "cascade")
 	}
 }
 
@@ -60,21 +60,21 @@ func TestOpenForm_RebuildsState(t *testing.T) {
 	a.openForm("First", []customactions.Prompt{
 		{Key: "ALPHA", Label: "A", Type: customactions.PromptText, Default: "first"},
 	}, nil)
-	if a.formValues["ALPHA"] != "first" {
-		t.Fatalf("first ALPHA = %q", a.formValues["ALPHA"])
+	if formOf(a).values["ALPHA"] != "first" {
+		t.Fatalf("first ALPHA = %q", formOf(a).values["ALPHA"])
 	}
 
 	a.openForm("Second", []customactions.Prompt{
 		{Key: "BETA", Label: "B", Type: customactions.PromptText, Default: "second"},
 	}, nil)
-	if _, ok := a.formValues["ALPHA"]; ok {
-		t.Errorf("ALPHA leaked from previous form: %v", a.formValues)
+	if _, ok := formOf(a).values["ALPHA"]; ok {
+		t.Errorf("ALPHA leaked from previous form: %v", formOf(a).values)
 	}
-	if a.formValues["BETA"] != "second" {
-		t.Errorf("BETA = %q, want %q", a.formValues["BETA"], "second")
+	if formOf(a).values["BETA"] != "second" {
+		t.Errorf("BETA = %q, want %q", formOf(a).values["BETA"], "second")
 	}
-	if a.formFocus != 0 {
-		t.Errorf("focus should reset to 0, got %d", a.formFocus)
+	if formOf(a).focus != 0 {
+		t.Errorf("focus should reset to 0, got %d", formOf(a).focus)
 	}
 }
 
@@ -85,17 +85,20 @@ func TestForm_TabCyclesFocus(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openForm("Test", scpPrompts(), nil)
 
-	steps := []struct{ key tcell.Key; want int }{
+	steps := []struct {
+		key  tcell.Key
+		want int
+	}{
 		{tcell.KeyTab, 1},
 		{tcell.KeyTab, 2},
-		{tcell.KeyTab, 0},      // wraps
-		{tcell.KeyBacktab, 2},  // wraps backward
+		{tcell.KeyTab, 0},     // wraps
+		{tcell.KeyBacktab, 2}, // wraps backward
 		{tcell.KeyBacktab, 1},
 	}
 	for i, s := range steps {
-		a.handleFormKey(tcell.NewEventKey(s.key, 0, tcell.ModNone))
-		if a.formFocus != s.want {
-			t.Errorf("step %d: focus = %d, want %d", i, a.formFocus, s.want)
+		formOf(a).handleKey(a, tcell.NewEventKey(s.key, 0, tcell.ModNone))
+		if formOf(a).focus != s.want {
+			t.Errorf("step %d: focus = %d, want %d", i, formOf(a).focus, s.want)
 		}
 	}
 }
@@ -109,17 +112,17 @@ func TestForm_SelectCyclesOptions(t *testing.T) {
 	a.openForm("Test", scpPrompts(), nil)
 	// Focus is on HOST (index 0) by default.
 
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
-	if a.formValues["HOST"] != "rager" {
-		t.Errorf("after Right: HOST = %q, want %q", a.formValues["HOST"], "rager")
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if formOf(a).values["HOST"] != "rager" {
+		t.Errorf("after Right: HOST = %q, want %q", formOf(a).values["HOST"], "rager")
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
-	if a.formValues["HOST"] != "cascade" {
-		t.Errorf("after Right wrap: HOST = %q, want %q", a.formValues["HOST"], "cascade")
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if formOf(a).values["HOST"] != "cascade" {
+		t.Errorf("after Right wrap: HOST = %q, want %q", formOf(a).values["HOST"], "cascade")
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
-	if a.formValues["HOST"] != "rager" {
-		t.Errorf("after Left wrap: HOST = %q, want %q", a.formValues["HOST"], "rager")
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
+	if formOf(a).values["HOST"] != "rager" {
+		t.Errorf("after Left wrap: HOST = %q, want %q", formOf(a).values["HOST"], "rager")
 	}
 }
 
@@ -134,19 +137,19 @@ func TestForm_TextEditingFlow(t *testing.T) {
 	}, nil)
 
 	for _, r := range "/tmp/x" {
-		a.handleFormKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
-	if a.formValues["REMOTE_SRC"] != "/tmp/x" {
-		t.Fatalf("after typing: %q", a.formValues["REMOTE_SRC"])
+	if formOf(a).values["REMOTE_SRC"] != "/tmp/x" {
+		t.Fatalf("after typing: %q", formOf(a).values["REMOTE_SRC"])
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
-	if a.formValues["REMOTE_SRC"] != "/tmp/" {
-		t.Fatalf("after backspace: %q", a.formValues["REMOTE_SRC"])
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
+	if formOf(a).values["REMOTE_SRC"] != "/tmp/" {
+		t.Fatalf("after backspace: %q", formOf(a).values["REMOTE_SRC"])
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyRune, '~', tcell.ModNone))
-	if a.formValues["REMOTE_SRC"] != "~/tmp/" {
-		t.Fatalf("after Home + insert: %q", a.formValues["REMOTE_SRC"])
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, '~', tcell.ModNone))
+	if formOf(a).values["REMOTE_SRC"] != "~/tmp/" {
+		t.Fatalf("after Home + insert: %q", formOf(a).values["REMOTE_SRC"])
 	}
 }
 
@@ -168,18 +171,18 @@ func TestForm_EnterAdvancesThenSubmits(t *testing.T) {
 		got = values
 	})
 
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if a.formFocus != 1 {
-		t.Fatalf("Enter on first row should advance focus, got %d", a.formFocus)
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if formOf(a).focus != 1 {
+		t.Fatalf("Enter on first row should advance focus, got %d", formOf(a).focus)
 	}
 	if called {
 		t.Fatal("callback should not fire until last-row submit")
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if !called || got["ALPHA"] != "a" || got["BETA"] != "b" {
 		t.Fatalf("submit didn't pass values: called=%v got=%v", called, got)
 	}
-	if a.formOpen {
+	if formOf(a) != nil {
 		t.Error("form should close on submit")
 	}
 }
@@ -192,8 +195,8 @@ func TestForm_EscCancelsWithoutCallback(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openForm("Test", scpPrompts(), func(*App, map[string]string) { called = true })
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
-	if a.formOpen {
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if formOf(a) != nil {
 		t.Error("Esc should close form")
 	}
 	if called {
@@ -210,20 +213,20 @@ func TestForm_MouseClicksOnSelectChevrons(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openForm("Test", scpPrompts(), nil)
 
-	mx, my, mw, _ := a.formModalRect()
+	mx, my, mw, _ := formOf(a).rect(a)
 	fieldStart := mx + 3
 	fieldEnd := mx + mw - 3
 	hostInputRow := my + 3 + 1 // first prompt's input row
 
 	// Click the > chevron — should advance from cascade to rager.
-	a.handleFormMouse(fieldEnd-1, hostInputRow, tcell.Button1)
-	if a.formValues["HOST"] != "rager" {
-		t.Errorf("after > click: HOST = %q", a.formValues["HOST"])
+	formOf(a).handleMouse(a, fieldEnd-1, hostInputRow, tcell.Button1)
+	if formOf(a).values["HOST"] != "rager" {
+		t.Errorf("after > click: HOST = %q", formOf(a).values["HOST"])
 	}
 	// Click the < chevron — should retreat back to cascade.
-	a.handleFormMouse(fieldStart, hostInputRow, tcell.Button1)
-	if a.formValues["HOST"] != "cascade" {
-		t.Errorf("after < click: HOST = %q", a.formValues["HOST"])
+	formOf(a).handleMouse(a, fieldStart, hostInputRow, tcell.Button1)
+	if formOf(a).values["HOST"] != "cascade" {
+		t.Errorf("after < click: HOST = %q", formOf(a).values["HOST"])
 	}
 }
 
@@ -236,13 +239,12 @@ func TestForm_MouseSubmitButton(t *testing.T) {
 	called := false
 	a.openForm("Test", scpPrompts(), func(*App, map[string]string) { called = true })
 
-	cancelX, submitX, btnY, _, submitW := a.formButtonRects()
-	_ = cancelX
-	a.handleFormMouse(submitX+submitW/2, btnY, tcell.Button1)
+	_, submit := formOf(a).buttons(a)
+	formOf(a).handleMouse(a, submit.x+submit.w/2, submit.y, tcell.Button1)
 	if !called {
 		t.Error("Submit click did not fire callback")
 	}
-	if a.formOpen {
+	if formOf(a) != nil {
 		t.Error("Submit click did not close form")
 	}
 }
@@ -255,8 +257,8 @@ func TestForm_ClickOutsideCancels(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openForm("Test", scpPrompts(), func(*App, map[string]string) { called = true })
-	a.handleFormMouse(0, 0, tcell.Button1)
-	if a.formOpen {
+	formOf(a).handleMouse(a, 0, 0, tcell.Button1)
+	if formOf(a) != nil {
 		t.Error("click outside should close")
 	}
 	if called {
@@ -278,7 +280,7 @@ func TestAnyModalOpen_IncludesForm(t *testing.T) {
 	if !a.anyModalOpen() {
 		t.Error("form open should report a modal open")
 	}
-	a.formCancel()
+	a.closeModal()
 	if a.anyModalOpen() {
 		t.Error("after cancel, no modal should be open")
 	}

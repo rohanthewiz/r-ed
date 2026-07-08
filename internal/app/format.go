@@ -31,8 +31,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rohanthewiz/r-ed/internal/format"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rohanthewiz/r-ed/internal/format"
 )
 
 // formatDoneEvent is posted by runFormatter when the goroutine
@@ -185,16 +185,15 @@ func (a *App) openFormatTrustPrompt(idx int, cfg *format.Config, argv []string) 
 	hash := cfg.Hash()
 
 	msg := fmt.Sprintf("Allow %s to run formatters on save?", filepath.Join(format.ConfigDir, format.ConfigFile))
-	a.openConfirm("Trust this project's formatter?", msg, func(app *App) {
+	m := a.openConfirm("Trust this project's formatter?", msg, func(app *App) {
 		// Yes — record allow, persist, and run.
 		app.persistTrust(root, hash, true)
 		app.execFormatter(tabPath, argv)
 	})
 	// Cancel/No path: persist a denial so we don't re-prompt every
-	// save. We pin this on confirmCancelHook (cleared by
-	// closeAllModals) so an unrelated future confirm modal can't
-	// inherit the side effect.
-	a.confirmCancelHook = func(app *App) {
+	// save. The hook lives on this confirm instance, so an unrelated
+	// future confirm modal can't inherit the side effect.
+	m.cancelHook = func(app *App) {
 		app.persistTrust(root, hash, false)
 	}
 }
@@ -233,7 +232,7 @@ func (a *App) openFormatInstallPrompt(idx int, ext string, argvTemplate []string
 	msg := fmt.Sprintf("Add %s for .%s to %s?", formatterName, ext,
 		filepath.Join(format.ConfigDir, format.ConfigFile))
 
-	a.openConfirm(title, msg, func(app *App) {
+	m := a.openConfirm(title, msg, func(app *App) {
 		// Yes — merge into project config, trust the new hash, run.
 		hash, err := format.InstallCommandIntoProject(root, ext, argvTemplate)
 		if err != nil {
@@ -257,7 +256,7 @@ func (a *App) openFormatInstallPrompt(idx int, ext string, argvTemplate []string
 		// the formatter at the file the user just saved.
 		app.execFormatter(tabPath, substituteFile(argvTemplate, tabPath))
 	})
-	a.confirmCancelHook = func(app *App) {
+	m.cancelHook = func(app *App) {
 		app.persistInstallDecline(root, ext, true)
 	}
 }

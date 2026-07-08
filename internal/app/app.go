@@ -33,8 +33,8 @@ import (
 	"github.com/rohanthewiz/r-ed/internal/filetree"
 	"github.com/rohanthewiz/r-ed/internal/finder"
 	"github.com/rohanthewiz/r-ed/internal/icons"
-	"github.com/rohanthewiz/r-ed/internal/userconfig"
 	"github.com/rohanthewiz/r-ed/internal/theme"
+	"github.com/rohanthewiz/r-ed/internal/userconfig"
 	"github.com/rohanthewiz/r-ed/internal/version"
 )
 
@@ -324,67 +324,14 @@ type App struct {
 	hoveredMenuRow int       // index into menuItems of the row under the mouse, or -1.
 	lastEscape     time.Time // timestamp of the previous Esc press, for double-tap detection.
 
-	// Prompt modal — single-line text input with OK / Cancel. Used by
-	// Rename and New File. See modals.go for render + event handling.
-	promptOpen     bool
-	promptTitle    string
-	promptHint     string
-	promptValue    []rune
-	promptCursor   int
-	promptScroll   int
-	promptCallback func(*App, string)
-
-	// Confirm modal — Yes / No, used by Delete. confirmHover is 0 for No
-	// (the safe default) or 1 for Yes.
-	confirmOpen     bool
-	confirmTitle    string
-	confirmMessage  string
-	confirmHover    int
-	confirmCallback func(*App)
-
-	// confirmInfo flips the confirm modal into a single-button "OK"
-	// flavour used for reporting things back to the user — like the
-	// full stderr from a failed custom action — that don't need a
-	// Yes/No decision. confirmMessageLines, when non-nil, supersedes
-	// confirmMessage so the renderer can draw a multi-line body for
-	// scp / ssh diagnostics that naturally wrap.
-	confirmInfo         bool
-	confirmMessageLines []string
-
-	// Save/Discard/Cancel modal — used when closing a dirty tab or
-	// quitting with unsaved changes. dirtyHover indexes the button row:
-	// 0 = Cancel (safe default for an accidental Enter), 1 = Discard,
-	// 2 = Save. Save and Discard run the corresponding callbacks; Cancel
-	// just dismisses.
-	dirtyOpen            bool
-	dirtyTitle           string
-	dirtyMessage         string
-	dirtyHover           int
-	dirtySaveCallback    func(*App)
-	dirtyDiscardCallback func(*App)
-
-	// Form modal — multi-field input collected before a custom action's
-	// shell command runs. See formmodal.go for layout, focus traversal,
-	// and the env-var injection that turns submitted values into KEY=
-	// pairs the spawned shell can read. Mutually exclusive with every
-	// other modal, like prompt/confirm.
-	formOpen     bool
-	formTitle    string
-	formPrompts  []customactions.Prompt
-	formValues   map[string]string // canonical store keyed by Prompt.Key
-	formText     [][]rune          // per-prompt rune slice (text rows only; nil for selects)
-	formCursor   []int             // caret position into formText[i]; index for selects
-	formScroll   []int             // horizontal scroll offset for text rows
-	formFocus    int               // which prompt row owns the keyboard
-	formCallback func(*App, map[string]string)
-
-	// Right-click context menu over the file tree.
-	contextOpen  bool
-	contextX     int
-	contextY     int
-	contextNode  *filetree.Node
-	contextItems []contextItem
-	contextHover int
+	// modal is the active secondary overlay (prompt, confirm,
+	// dirty-close, form, tree context menu, file finder) or nil when
+	// none is up. Exactly one can be open at a time — openModal
+	// enforces it — so the key/mouse routers dispatch to this single
+	// slot instead of walking a per-modal precedence chain. See
+	// modal.go for the interface and the individual modal files for
+	// each implementation.
+	modal modal
 
 	// Find bar — opened with Esc-f or the "Find in file" menu entry. The
 	// bar is a 1-row strip pinned above the status bar; while it's open
@@ -419,25 +366,10 @@ type App struct {
 	// menuLayout. nil / empty when the user hasn't configured any.
 	customActions []customactions.Action
 
-	// finder + finder modal state — project-wide file search ("Esc p"
-	// or ≡ → Find file). The Finder owns the cached index and a
-	// background-build goroutine; the rest of these fields are
-	// transient UI state for the modal itself.
-	finder         *finder.Finder
-	finderOpen     bool
-	finderQuery    []rune
-	finderCursor   int
-	finderScroll   int
-	finderSelected int
-	finderResults  []finder.Result
-
-	// confirmCancelHook runs when the active confirm modal is dismissed
-	// without a Yes — i.e. the user picked No, hit Esc, or clicked
-	// outside. Set after openConfirm by flows that want to react to the
-	// negative answer (today: format-trust deny, format-install
-	// decline). closeAllModals clears it so a stale hook can't fire on
-	// an unrelated future modal.
-	confirmCancelHook func(*App)
+	// finder owns the project-wide file-search index and its
+	// background-build goroutine ("Esc p" or ≡ → Find file). The
+	// transient UI state of an open finder lives in finderModal.
+	finder *finder.Finder
 
 	quit bool
 }
@@ -627,8 +559,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		// The background indexer just finished. Re-run the visible
 		// query so "Indexing…" gives way to real results without
 		// the user having to type or wait for the next keystroke.
-		if a.finderOpen {
-			a.refreshFinderResults()
+		if m, ok := a.modal.(*finderModal); ok {
+			m.refresh(a)
 		}
 	}
 }
@@ -871,36 +803,17 @@ func (a *App) menuModalRect() (x, y, w, h int) {
 // only "command" key is Esc, which closes the menu and acts as the leader
 // for the hotkey table in leader.go (Esc s = Save, Esc u = Undo, etc.).
 func (a *App) handleKey(ev *tcell.EventKey) {
-	// Secondary modals own the keyboard while they're up. Each handler
+	// The active modal owns the keyboard while it's up. Each handler
 	// understands Esc (cancel), Enter (submit / activate), and the keys
 	// relevant to its layout (text editing for the prompt, arrow keys for
-	// the context menu, etc.).
-	if a.promptOpen {
-		a.handlePromptKey(ev)
-		return
-	}
-	if a.confirmOpen {
-		a.handleConfirmKey(ev)
-		return
-	}
-	if a.dirtyOpen {
-		a.handleDirtyKey(ev)
-		return
-	}
-	if a.formOpen {
-		a.handleFormKey(ev)
-		return
-	}
-	if a.contextOpen {
-		a.handleContextKey(ev)
+	// the context menu, etc.). The find bar isn't a modal — it's a
+	// pinned strip — but it owns the keyboard the same way.
+	if a.modal != nil {
+		a.modal.handleKey(a, ev)
 		return
 	}
 	if a.findOpen {
 		a.handleFindKey(ev)
-		return
-	}
-	if a.finderOpen {
-		a.handleFinderKey(ev)
 		return
 	}
 
@@ -1022,30 +935,10 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		a.lastShiftAt = time.Now()
 	}
 
-	// Secondary modals absorb all mouse input. The order here matches
-	// keyboard routing so behavior stays predictable.
-	if a.promptOpen {
-		a.handlePromptMouse(x, y, btn)
-		return
-	}
-	if a.confirmOpen {
-		a.handleConfirmMouse(x, y, btn)
-		return
-	}
-	if a.dirtyOpen {
-		a.handleDirtyMouse(x, y, btn)
-		return
-	}
-	if a.formOpen {
-		a.handleFormMouse(x, y, btn)
-		return
-	}
-	if a.contextOpen {
-		a.handleContextMouse(x, y, btn)
-		return
-	}
-	if a.finderOpen {
-		a.handleFinderMouse(x, y, btn)
+	// The active modal absorbs all mouse input — same single-slot
+	// dispatch the keyboard router uses, so behavior stays predictable.
+	if a.modal != nil {
+		a.modal.handleMouse(a, x, y, btn)
 		return
 	}
 
@@ -2094,29 +1987,14 @@ func (a *App) draw() {
 	}
 	a.drawStatusBar()
 
-	// Modal layering, bottom-up. Only one of these is open at a time
-	// (closeAllModals enforces it), but the order still matters so a
-	// future contributor can't accidentally double-open them.
+	// Overlay layer. The menu and the active modal are mutually
+	// exclusive (closeAllModals enforces it), so at most one of these
+	// draws — last, above everything else.
 	if a.menuOpen {
 		a.drawMenu()
 	}
-	if a.contextOpen {
-		a.drawContext()
-	}
-	if a.promptOpen {
-		a.drawPrompt()
-	}
-	if a.confirmOpen {
-		a.drawConfirm()
-	}
-	if a.dirtyOpen {
-		a.drawDirtyClose()
-	}
-	if a.formOpen {
-		a.drawForm()
-	}
-	if a.finderOpen {
-		a.drawFinder()
+	if a.modal != nil {
+		a.modal.draw(a)
 	}
 }
 

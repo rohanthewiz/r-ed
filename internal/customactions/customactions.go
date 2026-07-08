@@ -150,13 +150,13 @@ func DefaultPath() string {
 //     than refuse the whole file.
 //   - An action whose Prompts list
 //     is malformed                → returns an error naming the
-//                                    offending action's label so the
-//                                    user can find it in the file.
-//                                    Prompts are too easy to typo and
-//                                    too dangerous to silently skip
-//                                    (a missing select option means
-//                                    the user can never submit the
-//                                    form), so this one we surface.
+//     offending action's label so the
+//     user can find it in the file.
+//     Prompts are too easy to typo and
+//     too dangerous to silently skip
+//     (a missing select option means
+//     the user can never submit the
+//     form), so this one we surface.
 func Load(path string) ([]Action, error) {
 	if path == "" {
 		return nil, nil

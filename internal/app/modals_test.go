@@ -23,35 +23,30 @@ import (
 	"github.com/rohanthewiz/r-ed/internal/filetree"
 )
 
-// TestCloseAllModals_ClearsEverything proves the helper turns off every
-// modal flag and clears the side-state (drag, auto-scroll dir, callbacks).
+// TestCloseAllModals_ClearsEverything proves the helper dismisses every
+// overlay (menu, modal slot, find bar) and clears the side-state (drag,
+// auto-scroll dir, menu hover). Per-modal state needs no clearing any
+// more — it lives on the struct and dies with the slot.
 func TestCloseAllModals_ClearsEverything(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.menuOpen = true
-	a.promptOpen = true
-	a.confirmOpen = true
-	a.contextOpen = true
+	a.modal = &contextModal{node: a.tree.Root, items: []contextItem{{label: "x"}}}
 	a.hoveredMenuRow = 3
-	a.contextNode = a.tree.Root
-	a.contextItems = []contextItem{{label: "x"}}
-	a.promptCallback = func(*App, string) {}
-	a.confirmCallback = func(*App) {}
+	a.findOpen = true
+	a.findValue = []rune("q")
 	a.dragMode = "editor"
 	a.autoScrollDir = 1
 
 	a.closeAllModals()
 
-	if a.menuOpen || a.promptOpen || a.confirmOpen || a.contextOpen {
-		t.Fatal("expected all modal flags off")
+	if a.menuOpen || a.modal != nil {
+		t.Fatal("expected menu and modal slot cleared")
+	}
+	if a.findOpen || a.findValue != nil {
+		t.Fatal("find bar state not cleared")
 	}
 	if a.hoveredMenuRow != -1 {
 		t.Fatalf("hoveredMenuRow not cleared: %d", a.hoveredMenuRow)
-	}
-	if a.contextNode != nil || a.contextItems != nil {
-		t.Fatal("context state not cleared")
-	}
-	if a.promptCallback != nil || a.confirmCallback != nil {
-		t.Fatal("callbacks not cleared")
 	}
 	if a.dragMode != "" {
 		t.Fatalf("dragMode not cleared: %q", a.dragMode)
@@ -72,17 +67,17 @@ func TestAnyModalOpen(t *testing.T) {
 		t.Fatal("expected true with menu open")
 	}
 	a.menuOpen = false
-	a.promptOpen = true
+	a.modal = &promptModal{}
 	if !a.anyModalOpen() {
 		t.Fatal("expected true with prompt open")
 	}
-	a.promptOpen = false
-	a.confirmOpen = true
+	a.modal = nil
+	a.modal = &confirmModal{}
 	if !a.anyModalOpen() {
 		t.Fatal("expected true with confirm open")
 	}
-	a.confirmOpen = false
-	a.contextOpen = true
+	a.modal = nil
+	a.modal = &contextModal{}
 	if !a.anyModalOpen() {
 		t.Fatal("expected true with context open")
 	}
@@ -94,17 +89,17 @@ func TestOpenPrompt_Submit(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	got := ""
 	a.openPrompt("Title", "Hint", "  hello  ", func(_ *App, v string) { got = v })
-	if !a.promptOpen {
+	if promptOf(a) == nil {
 		t.Fatal("openPrompt should set promptOpen")
 	}
-	if a.promptCursor != len([]rune("  hello  ")) {
-		t.Fatalf("cursor at end of initial: got %d", a.promptCursor)
+	if promptOf(a).field.cursor != len([]rune("  hello  ")) {
+		t.Fatalf("cursor at end of initial: got %d", promptOf(a).field.cursor)
 	}
-	a.promptSubmit()
+	promptOf(a).submit(a)
 	if got != "hello" {
 		t.Fatalf("callback got %q, want trimmed 'hello'", got)
 	}
-	if a.promptOpen {
+	if promptOf(a) != nil {
 		t.Fatal("promptSubmit should close the modal")
 	}
 }
@@ -114,11 +109,11 @@ func TestPromptSubmit_EmptyIsNoop(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openPrompt("T", "H", "   ", func(*App, string) { called = true })
-	a.promptSubmit()
+	promptOf(a).submit(a)
 	if called {
 		t.Fatal("empty submit should not run callback")
 	}
-	if !a.promptOpen {
+	if promptOf(a) == nil {
 		t.Fatal("empty submit should keep modal open")
 	}
 }
@@ -128,20 +123,32 @@ func TestPromptCancel(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openPrompt("T", "H", "x", func(*App, string) { called = true })
-	a.promptCancel()
+	a.closeModal()
 	if called {
 		t.Fatal("cancel should not run callback")
 	}
-	if a.promptOpen {
+	if promptOf(a) != nil {
 		t.Fatal("cancel should close")
 	}
 }
 
-// TestPromptSubmit_NoopWhenClosed guards against double-submits triggered
-// by stale events.
-func TestPromptSubmit_NoopWhenClosed(t *testing.T) {
+// TestKeysAfterCloseDontReachModal guards against double-submits from
+// stale events: once the modal is closed, further keystrokes route to
+// the editor, never to the departed modal — the structural replacement
+// for the old "noop when closed" guards inside each handler.
+func TestKeysAfterCloseDontReachModal(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	a.promptSubmit() // does nothing
+	called := 0
+	a.openPrompt("T", "H", "x", func(*App, string) { called++ })
+	promptOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
+	if called != 1 {
+		t.Fatalf("submit should fire once, got %d", called)
+	}
+	// The modal is gone; another Enter must not re-fire the callback.
+	a.handleKey(keyEv(tcell.KeyEnter, 0))
+	if called != 1 {
+		t.Fatalf("stale Enter re-fired the callback: %d", called)
+	}
 }
 
 // keyEv builds a synthetic tcell key event for tests.
@@ -157,71 +164,71 @@ func TestHandlePromptKey_Editing(t *testing.T) {
 
 	// Insert "abc".
 	for _, r := range "abc" {
-		a.handlePromptKey(keyEv(tcell.KeyRune, r))
+		promptOf(a).handleKey(a, keyEv(tcell.KeyRune, r))
 	}
-	if string(a.promptValue) != "abc" || a.promptCursor != 3 {
-		t.Fatalf("after insert: %q cur=%d", string(a.promptValue), a.promptCursor)
+	if string(promptOf(a).field.value) != "abc" || promptOf(a).field.cursor != 3 {
+		t.Fatalf("after insert: %q cur=%d", string(promptOf(a).field.value), promptOf(a).field.cursor)
 	}
 
 	// Control-rune is ignored.
-	a.handlePromptKey(keyEv(tcell.KeyRune, 0x01))
-	if string(a.promptValue) != "abc" {
-		t.Fatalf("control rune should be ignored: %q", string(a.promptValue))
+	promptOf(a).handleKey(a, keyEv(tcell.KeyRune, 0x01))
+	if string(promptOf(a).field.value) != "abc" {
+		t.Fatalf("control rune should be ignored: %q", string(promptOf(a).field.value))
 	}
 
 	// Home / End.
-	a.handlePromptKey(keyEv(tcell.KeyHome, 0))
-	if a.promptCursor != 0 {
-		t.Fatalf("Home: got %d", a.promptCursor)
+	promptOf(a).handleKey(a, keyEv(tcell.KeyHome, 0))
+	if promptOf(a).field.cursor != 0 {
+		t.Fatalf("Home: got %d", promptOf(a).field.cursor)
 	}
-	a.handlePromptKey(keyEv(tcell.KeyEnd, 0))
-	if a.promptCursor != 3 {
-		t.Fatalf("End: got %d", a.promptCursor)
+	promptOf(a).handleKey(a, keyEv(tcell.KeyEnd, 0))
+	if promptOf(a).field.cursor != 3 {
+		t.Fatalf("End: got %d", promptOf(a).field.cursor)
 	}
 
 	// Left / Right.
-	a.handlePromptKey(keyEv(tcell.KeyLeft, 0))
-	if a.promptCursor != 2 {
-		t.Fatalf("Left: got %d", a.promptCursor)
+	promptOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	if promptOf(a).field.cursor != 2 {
+		t.Fatalf("Left: got %d", promptOf(a).field.cursor)
 	}
-	a.handlePromptKey(keyEv(tcell.KeyRight, 0))
-	if a.promptCursor != 3 {
-		t.Fatalf("Right: got %d", a.promptCursor)
+	promptOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if promptOf(a).field.cursor != 3 {
+		t.Fatalf("Right: got %d", promptOf(a).field.cursor)
 	}
 	// Right past end is clamped.
-	a.handlePromptKey(keyEv(tcell.KeyRight, 0))
-	if a.promptCursor != 3 {
-		t.Fatalf("Right past end: got %d", a.promptCursor)
+	promptOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if promptOf(a).field.cursor != 3 {
+		t.Fatalf("Right past end: got %d", promptOf(a).field.cursor)
 	}
 	// Left past start is clamped.
-	a.promptCursor = 0
-	a.handlePromptKey(keyEv(tcell.KeyLeft, 0))
-	if a.promptCursor != 0 {
-		t.Fatalf("Left past start: got %d", a.promptCursor)
+	promptOf(a).field.cursor = 0
+	promptOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	if promptOf(a).field.cursor != 0 {
+		t.Fatalf("Left past start: got %d", promptOf(a).field.cursor)
 	}
 
 	// Backspace: cursor between 'a' and 'b' → removes 'a'.
-	a.promptCursor = 1
-	a.handlePromptKey(keyEv(tcell.KeyBackspace, 0))
-	if string(a.promptValue) != "bc" || a.promptCursor != 0 {
-		t.Fatalf("Backspace: %q cur=%d", string(a.promptValue), a.promptCursor)
+	promptOf(a).field.cursor = 1
+	promptOf(a).handleKey(a, keyEv(tcell.KeyBackspace, 0))
+	if string(promptOf(a).field.value) != "bc" || promptOf(a).field.cursor != 0 {
+		t.Fatalf("Backspace: %q cur=%d", string(promptOf(a).field.value), promptOf(a).field.cursor)
 	}
 	// Backspace at column 0 is a no-op.
-	a.handlePromptKey(keyEv(tcell.KeyBackspace2, 0))
-	if string(a.promptValue) != "bc" {
-		t.Fatalf("Backspace at 0 should be no-op: %q", string(a.promptValue))
+	promptOf(a).handleKey(a, keyEv(tcell.KeyBackspace2, 0))
+	if string(promptOf(a).field.value) != "bc" {
+		t.Fatalf("Backspace at 0 should be no-op: %q", string(promptOf(a).field.value))
 	}
 
 	// Delete forward: removes 'b' at cursor=0.
-	a.handlePromptKey(keyEv(tcell.KeyDelete, 0))
-	if string(a.promptValue) != "c" {
-		t.Fatalf("Delete: %q", string(a.promptValue))
+	promptOf(a).handleKey(a, keyEv(tcell.KeyDelete, 0))
+	if string(promptOf(a).field.value) != "c" {
+		t.Fatalf("Delete: %q", string(promptOf(a).field.value))
 	}
 	// Delete at end is no-op.
-	a.promptCursor = 1
-	a.handlePromptKey(keyEv(tcell.KeyDelete, 0))
-	if string(a.promptValue) != "c" {
-		t.Fatalf("Delete at end should be no-op: %q", string(a.promptValue))
+	promptOf(a).field.cursor = 1
+	promptOf(a).handleKey(a, keyEv(tcell.KeyDelete, 0))
+	if string(promptOf(a).field.value) != "c" {
+		t.Fatalf("Delete at end should be no-op: %q", string(promptOf(a).field.value))
 	}
 }
 
@@ -230,8 +237,8 @@ func TestHandlePromptKey_Esc(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openPrompt("T", "H", "x", func(*App, string) { called = true })
-	a.handlePromptKey(keyEv(tcell.KeyEsc, 0))
-	if a.promptOpen {
+	promptOf(a).handleKey(a, keyEv(tcell.KeyEsc, 0))
+	if promptOf(a) != nil {
 		t.Fatal("Esc should close")
 	}
 	if called {
@@ -244,34 +251,9 @@ func TestHandlePromptKey_Enter(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	got := ""
 	a.openPrompt("T", "H", "ok", func(_ *App, v string) { got = v })
-	a.handlePromptKey(keyEv(tcell.KeyEnter, 0))
+	promptOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if got != "ok" {
 		t.Fatalf("Enter callback: got %q", got)
-	}
-}
-
-// TestAdjustPromptScroll keeps the cursor inside the visible window.
-func TestAdjustPromptScroll(t *testing.T) {
-	a := newTestApp(t, t.TempDir())
-	a.promptValue = []rune("abcdefghijklmnop")
-	a.promptCursor = len(a.promptValue) // 16
-	a.promptScroll = 0
-	a.adjustPromptScroll(5)
-	if a.promptScroll != a.promptCursor-5+1 {
-		t.Fatalf("scroll-to-end: got %d, want %d", a.promptScroll, a.promptCursor-5+1)
-	}
-
-	a.promptCursor = 0
-	a.adjustPromptScroll(5)
-	if a.promptScroll != 0 {
-		t.Fatalf("scroll-to-start: got %d", a.promptScroll)
-	}
-
-	// Zero-width clamps to 0.
-	a.promptScroll = 7
-	a.adjustPromptScroll(0)
-	if a.promptScroll != 0 {
-		t.Fatalf("zero-width: got %d", a.promptScroll)
 	}
 }
 
@@ -280,11 +262,11 @@ func TestAdjustPromptScroll(t *testing.T) {
 func TestOpenConfirm_DefaultsToNo(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openConfirm("Delete", "Sure?", func(*App) {})
-	if !a.confirmOpen {
+	if confirmOf(a) == nil {
 		t.Fatal("confirm should open")
 	}
-	if a.confirmHover != 0 {
-		t.Fatalf("default focus should be No (0); got %d", a.confirmHover)
+	if confirmOf(a).hover != 0 {
+		t.Fatalf("default focus should be No (0); got %d", confirmOf(a).hover)
 	}
 }
 
@@ -293,23 +275,12 @@ func TestConfirmYes(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openConfirm("T", "M", func(*App) { called = true })
-	a.confirmYes()
+	confirmOf(a).yes(a)
 	if !called {
 		t.Fatal("confirmYes should run callback")
 	}
-	if a.confirmOpen {
+	if confirmOf(a) != nil {
 		t.Fatal("confirmYes should close")
-	}
-}
-
-// TestConfirmYes_NoopWhenClosed protects against stale events.
-func TestConfirmYes_NoopWhenClosed(t *testing.T) {
-	a := newTestApp(t, t.TempDir())
-	called := false
-	a.confirmCallback = func(*App) { called = true }
-	a.confirmYes()
-	if called {
-		t.Fatal("confirmYes should be a no-op when closed")
 	}
 }
 
@@ -318,7 +289,7 @@ func TestConfirmCancel(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openConfirm("T", "M", func(*App) { called = true })
-	a.confirmCancel()
+	confirmOf(a).cancel(a)
 	if called {
 		t.Fatal("cancel should skip callback")
 	}
@@ -331,30 +302,30 @@ func TestHandleConfirmKey_AllBranches(t *testing.T) {
 	a.openConfirm("T", "M", func(*App) { called = true })
 
 	// Tab cycles 0 ↔ 1.
-	a.handleConfirmKey(keyEv(tcell.KeyTab, 0))
-	if a.confirmHover != 1 {
-		t.Fatalf("Tab: got %d, want 1", a.confirmHover)
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyTab, 0))
+	if confirmOf(a).hover != 1 {
+		t.Fatalf("Tab: got %d, want 1", confirmOf(a).hover)
 	}
-	a.handleConfirmKey(keyEv(tcell.KeyTab, 0))
-	if a.confirmHover != 0 {
-		t.Fatalf("Tab back: got %d", a.confirmHover)
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyTab, 0))
+	if confirmOf(a).hover != 0 {
+		t.Fatalf("Tab back: got %d", confirmOf(a).hover)
 	}
 
 	// Left snaps to No (0).
-	a.confirmHover = 1
-	a.handleConfirmKey(keyEv(tcell.KeyLeft, 0))
-	if a.confirmHover != 0 {
-		t.Fatalf("Left: got %d", a.confirmHover)
+	confirmOf(a).hover = 1
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	if confirmOf(a).hover != 0 {
+		t.Fatalf("Left: got %d", confirmOf(a).hover)
 	}
 
 	// Right snaps to Yes (1).
-	a.handleConfirmKey(keyEv(tcell.KeyRight, 0))
-	if a.confirmHover != 1 {
-		t.Fatalf("Right: got %d", a.confirmHover)
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if confirmOf(a).hover != 1 {
+		t.Fatalf("Right: got %d", confirmOf(a).hover)
 	}
 
 	// Enter on Yes runs the callback.
-	a.handleConfirmKey(keyEv(tcell.KeyEnter, 0))
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if !called {
 		t.Fatal("Enter on Yes should fire callback")
 	}
@@ -362,16 +333,16 @@ func TestHandleConfirmKey_AllBranches(t *testing.T) {
 	// Re-open and verify Enter on No cancels.
 	called = false
 	a.openConfirm("T", "M", func(*App) { called = true })
-	a.confirmHover = 0
-	a.handleConfirmKey(keyEv(tcell.KeyEnter, 0))
+	confirmOf(a).hover = 0
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if called {
 		t.Fatal("Enter on No should cancel without firing callback")
 	}
 
 	// Esc cancels.
 	a.openConfirm("T", "M", func(*App) {})
-	a.handleConfirmKey(keyEv(tcell.KeyEsc, 0))
-	if a.confirmOpen {
+	confirmOf(a).handleKey(a, keyEv(tcell.KeyEsc, 0))
+	if confirmOf(a) != nil {
 		t.Fatal("Esc should close confirm")
 	}
 }
@@ -397,16 +368,16 @@ func TestOpenTreeContext_Folder(t *testing.T) {
 		t.Fatal("child node not in tree")
 	}
 	a.openTreeContext(node, 5, 5)
-	if !a.contextOpen {
+	if contextOf(a) == nil {
 		t.Fatal("context should open")
 	}
 	wantLabels := []string{"New File", "Rename", "Delete", "Copy rel path", "Copy abs path"}
-	if len(a.contextItems) != len(wantLabels) {
-		t.Fatalf("folder context should have %d items, got %d", len(wantLabels), len(a.contextItems))
+	if len(contextOf(a).items) != len(wantLabels) {
+		t.Fatalf("folder context should have %d items, got %d", len(wantLabels), len(contextOf(a).items))
 	}
 	for i, w := range wantLabels {
-		if a.contextItems[i].label != w {
-			t.Fatalf("item %d label: got %q, want %q", i, a.contextItems[i].label, w)
+		if contextOf(a).items[i].label != w {
+			t.Fatalf("item %d label: got %q, want %q", i, contextOf(a).items[i].label, w)
 		}
 	}
 }
@@ -432,12 +403,12 @@ func TestOpenTreeContext_File(t *testing.T) {
 	}
 	a.openTreeContext(node, 5, 5)
 	wantLabels := []string{"Rename", "Delete", "Copy rel path", "Copy abs path"}
-	if len(a.contextItems) != len(wantLabels) {
-		t.Fatalf("file context should have %d items, got %d", len(wantLabels), len(a.contextItems))
+	if len(contextOf(a).items) != len(wantLabels) {
+		t.Fatalf("file context should have %d items, got %d", len(wantLabels), len(contextOf(a).items))
 	}
 	for i, w := range wantLabels {
-		if a.contextItems[i].label != w {
-			t.Fatalf("item %d label: got %q, want %q", i, a.contextItems[i].label, w)
+		if contextOf(a).items[i].label != w {
+			t.Fatalf("item %d label: got %q, want %q", i, contextOf(a).items[i].label, w)
 		}
 	}
 }
@@ -448,12 +419,12 @@ func TestOpenTreeContext_Root(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openTreeContext(a.tree.Root, 5, 5)
 	wantLabels := []string{"New File", "Copy rel path", "Copy abs path"}
-	if len(a.contextItems) != len(wantLabels) {
-		t.Fatalf("root context should have %d items, got %d", len(wantLabels), len(a.contextItems))
+	if len(contextOf(a).items) != len(wantLabels) {
+		t.Fatalf("root context should have %d items, got %d", len(wantLabels), len(contextOf(a).items))
 	}
 	for i, w := range wantLabels {
-		if a.contextItems[i].label != w {
-			t.Fatalf("item %d label: got %q, want %q", i, a.contextItems[i].label, w)
+		if contextOf(a).items[i].label != w {
+			t.Fatalf("item %d label: got %q, want %q", i, contextOf(a).items[i].label, w)
 		}
 	}
 }
@@ -494,34 +465,45 @@ func TestContextActivate(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := 0
 	var seenNode *filetree.Node
-	a.contextOpen = true
-	a.contextNode = a.tree.Root
-	a.contextItems = []contextItem{
+	a.modal = &contextModal{}
+	contextOf(a).node = a.tree.Root
+	contextOf(a).items = []contextItem{
 		{label: "x", action: func(_ *App, n *filetree.Node) {
 			called++
 			seenNode = n
 		}},
 	}
-	a.contextHover = 0
-	a.contextActivate()
+	contextOf(a).hover = 0
+	contextOf(a).activate(a)
 	if called != 1 {
 		t.Fatalf("expected action to fire once, got %d", called)
 	}
 	if seenNode != a.tree.Root {
 		t.Fatal("action did not receive the contextNode")
 	}
-	if a.contextOpen {
+	if contextOf(a) != nil {
 		t.Fatal("contextActivate should close modals")
 	}
 }
 
-// TestContextActivate_OutOfRangeIsNoop guards against stale events.
+// TestContextActivate_OutOfRangeIsNoop guards against stale hover
+// indexes: activating with hover outside the item list must not fire
+// any action or panic.
 func TestContextActivate_OutOfRangeIsNoop(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	a.contextHover = 5
-	a.contextActivate() // no panic, no state change
-	a.contextHover = -1
-	a.contextActivate()
+	called := 0
+	m := &contextModal{
+		node:  a.tree.Root,
+		items: []contextItem{{label: "x", action: func(*App, *filetree.Node) { called++ }}},
+	}
+	a.modal = m
+	m.hover = 5
+	m.activate(a) // no panic, no state change
+	m.hover = -1
+	m.activate(a)
+	if called != 0 {
+		t.Fatalf("out-of-range activate fired the action %d times", called)
+	}
 }
 
 // TestRuneLen counts visible cells one-per-rune.
@@ -530,7 +512,7 @@ func TestRuneLen(t *testing.T) {
 		"":      0,
 		"abc":   3,
 		"héllo": 5, // five runes, one cell each by this helper's contract
-		"日本":   2,
+		"日本":    2,
 	}
 	for s, want := range cases {
 		if got := runeLen(s); got != want {
@@ -559,7 +541,8 @@ func TestTrimSpace(t *testing.T) {
 // TestPromptModalRect centers the prompt and clamps a tiny window.
 func TestPromptModalRect(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	x, y, w, h := a.promptModalRect()
+	m := &promptModal{}
+	x, y, w, h := m.rect(a)
 	if w != promptModalWidth || h != promptModalHeight {
 		t.Fatalf("size: (%d,%d)", w, h)
 	}
@@ -567,7 +550,7 @@ func TestPromptModalRect(t *testing.T) {
 		t.Fatalf("origin: (%d,%d)", x, y)
 	}
 	a.width, a.height = 4, 4
-	x, y, _, _ = a.promptModalRect()
+	x, y, _, _ = m.rect(a)
 	if x != 0 || y != 0 {
 		t.Fatalf("clamp: (%d,%d)", x, y)
 	}
@@ -576,14 +559,15 @@ func TestPromptModalRect(t *testing.T) {
 // TestConfirmModalRect centers the confirm modal and clamps a tiny window.
 func TestConfirmModalRect(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	x, y, w, h := a.confirmModalRect()
+	m := &confirmModal{}
+	x, y, w, h := m.rect(a)
 	if w != confirmModalWidth || h != confirmModalHeight {
 		t.Fatalf("size: (%d,%d)", w, h)
 	}
 	_ = x
 	_ = y
 	a.width, a.height = 4, 4
-	x, y, _, _ = a.confirmModalRect()
+	x, y, _, _ = m.rect(a)
 	if x != 0 || y != 0 {
 		t.Fatalf("clamp: (%d,%d)", x, y)
 	}
@@ -592,9 +576,8 @@ func TestConfirmModalRect(t *testing.T) {
 // TestContextRect returns origin + width + count-derived height.
 func TestContextRect(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	a.contextX, a.contextY = 10, 5
-	a.contextItems = []contextItem{{label: "a"}, {label: "b"}}
-	x, y, w, h := a.contextRect()
+	m := &contextModal{x: 10, y: 5, items: []contextItem{{label: "a"}, {label: "b"}}}
+	x, y, w, h := m.rect(a)
 	if x != 10 || y != 5 || w != contextMenuWidth || h != 4 {
 		t.Fatalf("contextRect: (%d,%d,%d,%d)", x, y, w, h)
 	}
@@ -605,8 +588,8 @@ func TestContextRect(t *testing.T) {
 func TestHandlePromptMouse_OutsideCancels(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openPrompt("T", "H", "x", nil)
-	a.handlePromptMouse(0, 0, tcell.Button1)
-	if a.promptOpen {
+	promptOf(a).handleMouse(a, 0, 0, tcell.Button1)
+	if promptOf(a) != nil {
 		t.Fatal("outside click should cancel")
 	}
 }
@@ -616,8 +599,8 @@ func TestHandlePromptMouse_OK(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	got := ""
 	a.openPrompt("T", "H", "ok", func(_ *App, v string) { got = v })
-	mx, my, _, _ := a.promptModalRect()
-	a.handlePromptMouse(mx+32, my+6, tcell.Button1)
+	mx, my, _, _ := promptOf(a).rect(a)
+	promptOf(a).handleMouse(a, mx+32, my+6, tcell.Button1)
 	if got != "ok" {
 		t.Fatalf("OK button: callback got %q", got)
 	}
@@ -628,8 +611,8 @@ func TestHandlePromptMouse_Cancel(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openPrompt("T", "H", "ok", func(*App, string) { called = true })
-	mx, my, _, _ := a.promptModalRect()
-	a.handlePromptMouse(mx+18, my+6, tcell.Button1)
+	mx, my, _, _ := promptOf(a).rect(a)
+	promptOf(a).handleMouse(a, mx+18, my+6, tcell.Button1)
 	if called {
 		t.Fatal("cancel button should skip callback")
 	}
@@ -640,11 +623,11 @@ func TestHandlePromptMouse_Cancel(t *testing.T) {
 func TestHandlePromptMouse_FieldClickMovesCursor(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openPrompt("T", "H", "abcdef", nil)
-	mx, my, _, _ := a.promptModalRect()
+	mx, my, _, _ := promptOf(a).rect(a)
 	// Click 2 cells into the field.
-	a.handlePromptMouse(mx+3+2, my+4, tcell.Button1)
-	if a.promptCursor != 2 {
-		t.Fatalf("field click: got %d, want 2", a.promptCursor)
+	promptOf(a).handleMouse(a, mx+3+2, my+4, tcell.Button1)
+	if promptOf(a).field.cursor != 2 {
+		t.Fatalf("field click: got %d, want 2", promptOf(a).field.cursor)
 	}
 }
 
@@ -652,8 +635,8 @@ func TestHandlePromptMouse_FieldClickMovesCursor(t *testing.T) {
 func TestHandlePromptMouse_NoButton(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openPrompt("T", "H", "x", nil)
-	a.handlePromptMouse(0, 0, 0)
-	if !a.promptOpen {
+	promptOf(a).handleMouse(a, 0, 0, 0)
+	if promptOf(a) == nil {
 		t.Fatal("motion event should not close prompt")
 	}
 }
@@ -662,8 +645,8 @@ func TestHandlePromptMouse_NoButton(t *testing.T) {
 func TestHandleConfirmMouse_OutsideCancels(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openConfirm("T", "M", nil)
-	a.handleConfirmMouse(0, 0, tcell.Button1)
-	if a.confirmOpen {
+	confirmOf(a).handleMouse(a, 0, 0, tcell.Button1)
+	if confirmOf(a) != nil {
 		t.Fatal("outside click should cancel")
 	}
 }
@@ -674,21 +657,21 @@ func TestHandleConfirmMouse_HoverAndClick(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := false
 	a.openConfirm("T", "M", func(*App) { called = true })
-	mx, my, _, _ := a.confirmModalRect()
+	mx, my, _, _ := confirmOf(a).rect(a)
 
 	// Hover over Yes (28..38) — sets confirmHover to 1.
-	a.handleConfirmMouse(mx+30, my+5, 0)
-	if a.confirmHover != 1 {
-		t.Fatalf("hover Yes: got %d", a.confirmHover)
+	confirmOf(a).handleMouse(a, mx+30, my+5, 0)
+	if confirmOf(a).hover != 1 {
+		t.Fatalf("hover Yes: got %d", confirmOf(a).hover)
 	}
 	// Hover back over No (14..22).
-	a.handleConfirmMouse(mx+16, my+5, 0)
-	if a.confirmHover != 0 {
-		t.Fatalf("hover No: got %d", a.confirmHover)
+	confirmOf(a).handleMouse(a, mx+16, my+5, 0)
+	if confirmOf(a).hover != 0 {
+		t.Fatalf("hover No: got %d", confirmOf(a).hover)
 	}
 
 	// Click Yes — fires callback.
-	a.handleConfirmMouse(mx+30, my+5, tcell.Button1)
+	confirmOf(a).handleMouse(a, mx+30, my+5, tcell.Button1)
 	if !called {
 		t.Fatal("click Yes should fire callback")
 	}
@@ -696,7 +679,7 @@ func TestHandleConfirmMouse_HoverAndClick(t *testing.T) {
 	// Re-open and click No.
 	called = false
 	a.openConfirm("T", "M", func(*App) { called = true })
-	a.handleConfirmMouse(mx+16, my+5, tcell.Button1)
+	confirmOf(a).handleMouse(a, mx+16, my+5, tcell.Button1)
 	if called {
 		t.Fatal("click No should not fire callback")
 	}
@@ -706,38 +689,38 @@ func TestHandleConfirmMouse_HoverAndClick(t *testing.T) {
 func TestHandleContextKey(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := 0
-	a.contextOpen = true
-	a.contextNode = a.tree.Root
-	a.contextItems = []contextItem{
+	a.modal = &contextModal{}
+	contextOf(a).node = a.tree.Root
+	contextOf(a).items = []contextItem{
 		{label: "one", action: func(*App, *filetree.Node) { called++ }},
 		{label: "two", action: func(*App, *filetree.Node) { called += 10 }},
 	}
-	a.contextHover = 0
+	contextOf(a).hover = 0
 
 	// Up at top — clamp.
-	a.handleContextKey(keyEv(tcell.KeyUp, 0))
-	if a.contextHover != 0 {
-		t.Fatalf("Up clamp: got %d", a.contextHover)
+	contextOf(a).handleKey(a, keyEv(tcell.KeyUp, 0))
+	if contextOf(a).hover != 0 {
+		t.Fatalf("Up clamp: got %d", contextOf(a).hover)
 	}
 	// Down advances.
-	a.handleContextKey(keyEv(tcell.KeyDown, 0))
-	if a.contextHover != 1 {
-		t.Fatalf("Down: got %d", a.contextHover)
+	contextOf(a).handleKey(a, keyEv(tcell.KeyDown, 0))
+	if contextOf(a).hover != 1 {
+		t.Fatalf("Down: got %d", contextOf(a).hover)
 	}
 	// Down at bottom — clamp.
-	a.handleContextKey(keyEv(tcell.KeyDown, 0))
-	if a.contextHover != 1 {
-		t.Fatalf("Down clamp: got %d", a.contextHover)
+	contextOf(a).handleKey(a, keyEv(tcell.KeyDown, 0))
+	if contextOf(a).hover != 1 {
+		t.Fatalf("Down clamp: got %d", contextOf(a).hover)
 	}
 	// Enter activates the second item.
-	a.handleContextKey(keyEv(tcell.KeyEnter, 0))
+	contextOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if called != 10 {
 		t.Fatalf("Enter: called=%d", called)
 	}
 	// Re-open and Esc.
-	a.contextOpen = true
-	a.handleContextKey(keyEv(tcell.KeyEsc, 0))
-	if a.contextOpen {
+	a.modal = &contextModal{}
+	contextOf(a).handleKey(a, keyEv(tcell.KeyEsc, 0))
+	if contextOf(a) != nil {
 		t.Fatal("Esc should close")
 	}
 }
@@ -747,36 +730,35 @@ func TestHandleContextKey(t *testing.T) {
 func TestHandleContextMouse_HoverAndClick(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	called := 0
-	a.contextOpen = true
-	a.contextX, a.contextY = 5, 5
-	a.contextNode = a.tree.Root
-	a.contextItems = []contextItem{
+	a.modal = &contextModal{}
+	contextOf(a).x, contextOf(a).y = 5, 5
+	contextOf(a).node = a.tree.Root
+	contextOf(a).items = []contextItem{
 		{label: "one", action: func(*App, *filetree.Node) { called++ }},
 		{label: "two", action: func(*App, *filetree.Node) { called += 10 }},
 	}
-	a.contextHover = 0
+	contextOf(a).hover = 0
 
 	// Hover row index 1 (relY=2 inside box at y=5 → screen y=7).
-	a.handleContextMouse(7, 7, 0)
-	if a.contextHover != 1 {
-		t.Fatalf("hover: got %d", a.contextHover)
+	contextOf(a).handleMouse(a, 7, 7, 0)
+	if contextOf(a).hover != 1 {
+		t.Fatalf("hover: got %d", contextOf(a).hover)
 	}
-	// Click row 0.
-	a.contextOpen = true
-	a.contextX, a.contextY = 5, 5
-	a.contextItems = []contextItem{
+	// Click row 0. A fresh modal instance needs its own node — state
+	// no longer lingers on the App between opens.
+	a.modal = &contextModal{x: 5, y: 5, node: a.tree.Root, items: []contextItem{
 		{label: "one", action: func(*App, *filetree.Node) { called++ }},
-	}
-	a.handleContextMouse(7, 6, tcell.Button1)
+	}}
+	contextOf(a).handleMouse(a, 7, 6, tcell.Button1)
 	if called == 0 {
 		t.Fatal("click on row should activate")
 	}
 
-	// Outside click closes.
-	a.contextOpen = true
-	a.contextItems = []contextItem{{label: "x"}}
-	a.handleContextMouse(0, 0, tcell.Button1)
-	if a.contextOpen {
+	// Outside click closes. Anchor away from (0,0) so the click point
+	// really is outside the popup's rect.
+	a.modal = &contextModal{x: 5, y: 5, items: []contextItem{{label: "x"}}}
+	contextOf(a).handleMouse(a, 0, 0, tcell.Button1)
+	if contextOf(a) != nil {
 		t.Fatal("outside click should close")
 	}
 }
@@ -817,11 +799,11 @@ func seedDirtyApp(t *testing.T) *App {
 func TestOpenDirtyClose_DefaultsToCancel(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openDirtyClose("T", "M", func(*App) {}, func(*App) {})
-	if !a.dirtyOpen {
+	if dirtyOf(a) == nil {
 		t.Fatal("modal should open")
 	}
-	if a.dirtyHover != 0 {
-		t.Fatalf("default focus should be Cancel (0), got %d", a.dirtyHover)
+	if dirtyOf(a).hover != 0 {
+		t.Fatalf("default focus should be Cancel (0), got %d", dirtyOf(a).hover)
 	}
 }
 
@@ -833,11 +815,11 @@ func TestRequestCloseTab_DirtySaveClosesTab(t *testing.T) {
 	target := a.tabs[0].Path
 
 	a.requestCloseTab(0)
-	if !a.dirtyOpen {
+	if dirtyOf(a) == nil {
 		t.Fatal("dirty close should open the modal")
 	}
-	a.dirtyHover = 2 // Save
-	a.dirtyActivate()
+	dirtyOf(a).hover = 2 // Save
+	dirtyOf(a).activate(a)
 
 	if len(a.tabs) != 0 {
 		t.Fatalf("Save should also close the tab; %d tabs left", len(a.tabs))
@@ -858,8 +840,8 @@ func TestRequestCloseTab_DirtyDiscardClosesWithoutSaving(t *testing.T) {
 	target := a.tabs[0].Path
 
 	a.requestCloseTab(0)
-	a.dirtyHover = 1 // Discard
-	a.dirtyActivate()
+	dirtyOf(a).hover = 1 // Discard
+	dirtyOf(a).activate(a)
 
 	if len(a.tabs) != 0 {
 		t.Fatal("Discard should close the tab")
@@ -876,8 +858,8 @@ func TestRequestCloseTab_DirtyCancelKeepsTab(t *testing.T) {
 	a := seedDirtyApp(t)
 
 	a.requestCloseTab(0)
-	a.dirtyHover = 0 // Cancel
-	a.dirtyActivate()
+	dirtyOf(a).hover = 0 // Cancel
+	dirtyOf(a).activate(a)
 
 	if len(a.tabs) != 1 {
 		t.Fatalf("Cancel should keep the tab; got %d", len(a.tabs))
@@ -885,7 +867,7 @@ func TestRequestCloseTab_DirtyCancelKeepsTab(t *testing.T) {
 	if !a.activeTabPtr().Dirty {
 		t.Fatal("Cancel should not flip the dirty flag")
 	}
-	if a.dirtyOpen {
+	if dirtyOf(a) != nil {
 		t.Fatal("Cancel should dismiss the modal")
 	}
 }
@@ -902,7 +884,7 @@ func TestMenuQuit_NoDirtyTabsExitsImmediately(t *testing.T) {
 	a := newTestApp(t, dir)
 	a.openFile(target)
 	a.menuQuit()
-	if a.dirtyOpen {
+	if dirtyOf(a) != nil {
 		t.Fatal("clean state should skip the modal")
 	}
 	if !a.quit {
@@ -918,7 +900,7 @@ func TestMenuQuit_DirtyOpensModal(t *testing.T) {
 	if a.quit {
 		t.Fatal("dirty quit should not exit until the user picks an action")
 	}
-	if !a.dirtyOpen {
+	if dirtyOf(a) == nil {
 		t.Fatal("dirty quit should open the modal")
 	}
 }
@@ -932,8 +914,8 @@ func TestMenuQuit_DirtySaveSavesAllAndQuits(t *testing.T) {
 	target := a.tabs[0].Path
 
 	a.menuQuit()
-	a.dirtyHover = 2 // Save
-	a.dirtyActivate()
+	dirtyOf(a).hover = 2 // Save
+	dirtyOf(a).activate(a)
 
 	if !a.quit {
 		t.Fatal("Save in quit modal should set quit")
@@ -951,8 +933,8 @@ func TestMenuQuit_DirtyDiscardQuitsWithoutSaving(t *testing.T) {
 	target := a.tabs[0].Path
 
 	a.menuQuit()
-	a.dirtyHover = 1 // Discard
-	a.dirtyActivate()
+	dirtyOf(a).hover = 1 // Discard
+	dirtyOf(a).activate(a)
 
 	if !a.quit {
 		t.Fatal("Discard should still quit")
@@ -974,37 +956,37 @@ func TestHandleDirtyKey_AllBranches(t *testing.T) {
 		func(*App) { discardCalled = true })
 
 	// Right walks Cancel -> Discard -> Save and stops at Save.
-	a.handleDirtyKey(keyEv(tcell.KeyRight, 0))
-	if a.dirtyHover != 1 {
-		t.Fatalf("Right(0->1) got %d", a.dirtyHover)
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if dirtyOf(a).hover != 1 {
+		t.Fatalf("Right(0->1) got %d", dirtyOf(a).hover)
 	}
-	a.handleDirtyKey(keyEv(tcell.KeyRight, 0))
-	if a.dirtyHover != 2 {
-		t.Fatalf("Right(1->2) got %d", a.dirtyHover)
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if dirtyOf(a).hover != 2 {
+		t.Fatalf("Right(1->2) got %d", dirtyOf(a).hover)
 	}
-	a.handleDirtyKey(keyEv(tcell.KeyRight, 0))
-	if a.dirtyHover != 2 {
-		t.Fatalf("Right(2->2) should clamp, got %d", a.dirtyHover)
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyRight, 0))
+	if dirtyOf(a).hover != 2 {
+		t.Fatalf("Right(2->2) should clamp, got %d", dirtyOf(a).hover)
 	}
 
 	// Left walks back, also clamps at 0.
-	a.handleDirtyKey(keyEv(tcell.KeyLeft, 0))
-	a.handleDirtyKey(keyEv(tcell.KeyLeft, 0))
-	a.handleDirtyKey(keyEv(tcell.KeyLeft, 0))
-	if a.dirtyHover != 0 {
-		t.Fatalf("Left should clamp at 0, got %d", a.dirtyHover)
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyLeft, 0))
+	if dirtyOf(a).hover != 0 {
+		t.Fatalf("Left should clamp at 0, got %d", dirtyOf(a).hover)
 	}
 
 	// Tab cycles all the way around.
-	a.handleDirtyKey(keyEv(tcell.KeyTab, 0))
-	a.handleDirtyKey(keyEv(tcell.KeyTab, 0))
-	a.handleDirtyKey(keyEv(tcell.KeyTab, 0))
-	if a.dirtyHover != 0 {
-		t.Fatalf("Tab cycle should land back on 0, got %d", a.dirtyHover)
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyTab, 0))
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyTab, 0))
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyTab, 0))
+	if dirtyOf(a).hover != 0 {
+		t.Fatalf("Tab cycle should land back on 0, got %d", dirtyOf(a).hover)
 	}
 
 	// Enter on Cancel (default) — runs neither callback.
-	a.handleDirtyKey(keyEv(tcell.KeyEnter, 0))
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if saveCalled || discardCalled {
 		t.Fatalf("Enter on Cancel should run neither cb (save=%v discard=%v)",
 			saveCalled, discardCalled)
@@ -1014,8 +996,8 @@ func TestHandleDirtyKey_AllBranches(t *testing.T) {
 	a.openDirtyClose("T", "M",
 		func(*App) { saveCalled = true },
 		func(*App) { discardCalled = true })
-	a.dirtyHover = 1
-	a.handleDirtyKey(keyEv(tcell.KeyEnter, 0))
+	dirtyOf(a).hover = 1
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if !discardCalled {
 		t.Fatal("Enter on Discard should fire discard callback")
 	}
@@ -1025,8 +1007,8 @@ func TestHandleDirtyKey_AllBranches(t *testing.T) {
 	a.openDirtyClose("T", "M",
 		func(*App) { saveCalled = true },
 		func(*App) {})
-	a.dirtyHover = 2
-	a.handleDirtyKey(keyEv(tcell.KeyEnter, 0))
+	dirtyOf(a).hover = 2
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyEnter, 0))
 	if !saveCalled {
 		t.Fatal("Enter on Save should fire save callback")
 	}
@@ -1034,8 +1016,8 @@ func TestHandleDirtyKey_AllBranches(t *testing.T) {
 	// Esc dismisses without firing anything.
 	a.openDirtyClose("T", "M", func(*App) { t.Fatal("save fired on Esc") },
 		func(*App) { t.Fatal("discard fired on Esc") })
-	a.handleDirtyKey(keyEv(tcell.KeyEsc, 0))
-	if a.dirtyOpen {
+	dirtyOf(a).handleKey(a, keyEv(tcell.KeyEsc, 0))
+	if dirtyOf(a) != nil {
 		t.Fatal("Esc should close the modal")
 	}
 }
@@ -1086,22 +1068,29 @@ func TestDirtyTabCount(t *testing.T) {
 	}
 }
 
-// TestDirtyButtonAtRelX_HitsAndMisses pins the geometry helper so the
-// click rect math stays in sync with the draw layout.
-func TestDirtyButtonAtRelX_HitsAndMisses(t *testing.T) {
+// TestDirtyButtonAt_HitsAndMisses pins the geometry helper so the
+// click rect math stays in sync with the draw layout: a hit one cell
+// into each button resolves to its index, and cells between / past the
+// buttons miss.
+func TestDirtyButtonAt_HitsAndMisses(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.openDirtyClose("Unsaved", "save?", nil, nil)
+	m := dirtyOf(a)
+	b := m.buttons(a)
 	cases := []struct {
-		rx   int
+		x, y int
 		want int
 	}{
-		{dirtyBtnCancelX + 1, 0},
-		{dirtyBtnDiscardX + 1, 1},
-		{dirtyBtnSaveX + 1, 2},
-		{0, -1},
-		{dirtyBtnSaveX + dirtyBtnSaveW + 5, -1},
+		{b[0].x + 1, b[0].y, 0},
+		{b[1].x + 1, b[1].y, 1},
+		{b[2].x + 1, b[2].y, 2},
+		{b[0].x - 1, b[0].y, -1},          // left of Cancel
+		{b[2].x + b[2].w + 5, b[2].y, -1}, // past Save
+		{b[1].x + 1, b[1].y + 1, -1},      // right column, wrong row
 	}
 	for _, c := range cases {
-		if got := dirtyButtonAtRelX(c.rx); got != c.want {
-			t.Errorf("rx=%d: got %d, want %d", c.rx, got, c.want)
+		if got := m.buttonAt(a, c.x, c.y); got != c.want {
+			t.Errorf("(%d,%d): got %d, want %d", c.x, c.y, got, c.want)
 		}
 	}
 }

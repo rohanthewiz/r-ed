@@ -307,10 +307,10 @@ func TestMenuRenameFolder_OpensPrompt(t *testing.T) {
 	a.setActiveFolder(sub)
 
 	a.menuRenameFolder()
-	if !a.promptOpen {
+	if promptOf(a) == nil {
 		t.Fatal("expected prompt to open")
 	}
-	if got := string(a.promptValue); got != "victim" {
+	if got := string(promptOf(a).field.value); got != "victim" {
 		t.Fatalf("prompt value: got %q, want %q", got, "victim")
 	}
 }
@@ -325,7 +325,7 @@ func TestMenuRenameFolder_RefusesRoot(t *testing.T) {
 	a.setActiveFolder(root)
 
 	a.menuRenameFolder()
-	if a.promptOpen {
+	if promptOf(a) != nil {
 		t.Fatal("root should not open the rename prompt")
 	}
 }
@@ -368,11 +368,11 @@ func TestMenuDeleteFolder_Confirms(t *testing.T) {
 	a.setActiveFolder(sub)
 
 	a.menuDeleteFolder()
-	if !a.confirmOpen {
+	if confirmOf(a) == nil {
 		t.Fatal("expected confirm modal to open")
 	}
-	a.confirmHover = 1
-	a.confirmYes()
+	confirmOf(a).hover = 1
+	confirmOf(a).yes(a)
 
 	if _, err := os.Stat(sub); !os.IsNotExist(err) {
 		t.Fatalf("folder still exists: err=%v", err)
@@ -393,7 +393,7 @@ func TestMenuDeleteFolder_RefusesRoot(t *testing.T) {
 	a.setActiveFolder(root)
 
 	a.menuDeleteFolder()
-	if a.confirmOpen {
+	if confirmOf(a) != nil {
 		t.Fatal("root folder should not open a confirm modal")
 	}
 	if _, err := os.Stat(root); err != nil {

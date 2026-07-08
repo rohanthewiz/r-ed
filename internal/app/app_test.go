@@ -346,7 +346,7 @@ func TestRequestCloseTab_DirtyOpensModal(t *testing.T) {
 	if len(a.tabs) != 1 {
 		t.Fatalf("dirty tab should not close until the user picks an action")
 	}
-	if !a.dirtyOpen {
+	if dirtyOf(a) == nil {
 		t.Fatal("dirty close modal should be open")
 	}
 }
@@ -1524,10 +1524,10 @@ func TestDraw_AllPanels(t *testing.T) {
 	a.closeMenu()
 	a.openPrompt("T", "H", "x", nil)
 	a.draw()
-	a.promptCancel()
+	a.closeModal()
 	a.openConfirm("T", "M", nil)
 	a.draw()
-	a.confirmCancel()
+	confirmOf(a).cancel(a)
 	a.openTreeContext(a.tree.Root, 5, 5)
 	a.draw()
 	a.closeAllModals()
@@ -1855,7 +1855,7 @@ func TestRunCustomAction_PromptedSkipsNoFileGuard(t *testing.T) {
 	}}
 	a.runCustomAction(0)
 
-	if !a.formOpen {
+	if formOf(a) == nil {
 		t.Fatal("prompted action with no file open should still show the form modal")
 	}
 	if strings.Contains(a.statusMsg, "no file open") {
@@ -1884,18 +1884,18 @@ func TestRunCustomAction_PromptedExportsValuesAndExpands(t *testing.T) {
 	}}
 
 	a.runCustomAction(0)
-	if !a.formOpen {
+	if formOf(a) == nil {
 		t.Fatal("form did not open")
 	}
 
 	// Fill in REMOTE_SRC by typing into the focused field after Tab'ing
 	// past the HOST select.
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	for _, r := range "/etc/hosts" {
-		a.handleFormKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
-	a.handleFormKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if a.formOpen {
+	formOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if formOf(a) != nil {
 		t.Fatal("Enter on last field should submit")
 	}
 
@@ -1941,15 +1941,15 @@ func TestHandleCustomActionDone_FailureOpensInfoModal(t *testing.T) {
 		err:    fmt.Errorf("exit status 1"),
 		output: []byte("scp: /etc/missing: No such file or directory\n"),
 	})
-	if !a.confirmOpen || !a.confirmInfo {
+	if confirmOf(a) == nil || !confirmOf(a).info {
 		t.Fatal("info modal should be open")
 	}
-	joined := strings.Join(a.confirmMessageLines, "\n")
+	joined := strings.Join(confirmOf(a).lines, "\n")
 	if !strings.Contains(joined, "scp:") || !strings.Contains(joined, "missing") {
 		t.Errorf("info body missing stderr preview: %q", joined)
 	}
-	if !strings.Contains(a.confirmTitle, "Copy from remote") {
-		t.Errorf("title = %q, want it to mention the action label", a.confirmTitle)
+	if !strings.Contains(confirmOf(a).title, "Copy from remote") {
+		t.Errorf("title = %q, want it to mention the action label", confirmOf(a).title)
 	}
 }
 

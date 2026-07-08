@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rohanthewiz/r-ed/internal/finder"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rohanthewiz/r-ed/internal/finder"
 )
 
 // waitForFinderReady spins until the App's finder reports
@@ -70,10 +70,10 @@ func TestOpenFinder_PopulatesResults(t *testing.T) {
 	a, _ := withFinder(t)
 	a.openFinder()
 
-	if !a.finderOpen {
+	if finderOf(a) == nil {
 		t.Fatal("finderOpen should be true after openFinder")
 	}
-	if len(a.finderResults) == 0 {
+	if len(finderOf(a).results) == 0 {
 		t.Fatal("expected initial result list (empty query → alphabetical)")
 	}
 }
@@ -85,14 +85,14 @@ func TestFinderKey_TypingFiltersResults(t *testing.T) {
 	a, _ := withFinder(t)
 	a.openFinder()
 	for _, r := range "tab" {
-		a.handleFinderKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
 
-	if len(a.finderResults) == 0 {
+	if len(finderOf(a).results) == 0 {
 		t.Fatal("expected results after typing query")
 	}
-	if !endsWith(a.finderResults[0].Path, "tab.go") {
-		t.Fatalf("top result: got %q, want ends-with tab.go", a.finderResults[0].Path)
+	if !endsWith(finderOf(a).results[0].Path, "tab.go") {
+		t.Fatalf("top result: got %q, want ends-with tab.go", finderOf(a).results[0].Path)
 	}
 }
 
@@ -103,18 +103,18 @@ func TestFinderKey_BackspaceShrinksQuery(t *testing.T) {
 	a, _ := withFinder(t)
 	a.openFinder()
 	for _, r := range "score" {
-		a.handleFinderKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
-	narrow := len(a.finderResults)
+	narrow := len(finderOf(a).results)
 
 	// Backspace twice — the query becomes "sco", broader match.
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModNone))
 
-	if len(a.finderResults) < narrow {
-		t.Fatalf("backspace should not shrink results: was %d, now %d", narrow, len(a.finderResults))
+	if len(finderOf(a).results) < narrow {
+		t.Fatalf("backspace should not shrink results: was %d, now %d", narrow, len(finderOf(a).results))
 	}
-	if got := string(a.finderQuery); got != "sco" {
+	if got := string(finderOf(a).field.value); got != "sco" {
 		t.Fatalf("query: got %q, want %q", got, "sco")
 	}
 }
@@ -126,18 +126,18 @@ func TestFinderKey_ArrowsMoveSelection(t *testing.T) {
 	a, _ := withFinder(t)
 	a.openFinder()
 
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
-	if a.finderSelected != 1 {
-		t.Fatalf("selected after ↓: got %d, want 1", a.finderSelected)
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if finderOf(a).selected != 1 {
+		t.Fatalf("selected after ↓: got %d, want 1", finderOf(a).selected)
 	}
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
-	if a.finderSelected != 0 {
-		t.Fatalf("selected after ↑: got %d, want 0", a.finderSelected)
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	if finderOf(a).selected != 0 {
+		t.Fatalf("selected after ↑: got %d, want 0", finderOf(a).selected)
 	}
 	// ↑ at the top stays put.
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
-	if a.finderSelected != 0 {
-		t.Fatalf("selected at top after ↑: got %d, want 0", a.finderSelected)
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	if finderOf(a).selected != 0 {
+		t.Fatalf("selected at top after ↑: got %d, want 0", finderOf(a).selected)
 	}
 }
 
@@ -149,16 +149,16 @@ func TestFinderKey_EnterOpensFile(t *testing.T) {
 	a, dir := withFinder(t)
 	a.openFinder()
 	for _, r := range "score" {
-		a.handleFinderKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
-	if len(a.finderResults) == 0 {
+	if len(finderOf(a).results) == 0 {
 		t.Fatal("expected score results")
 	}
-	want := filepath.Join(dir, a.finderResults[0].Path)
+	want := filepath.Join(dir, finderOf(a).results[0].Path)
 
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
-	if a.finderOpen {
+	if finderOf(a) != nil {
 		t.Fatal("modal should close after Enter")
 	}
 	tab := a.activeTabPtr()
@@ -176,14 +176,20 @@ func TestFinderKey_EnterOpensFile(t *testing.T) {
 func TestFinderKey_EscClosesModal(t *testing.T) {
 	a, _ := withFinder(t)
 	a.openFinder()
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
-	a.handleFinderKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	finderOf(a).handleKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
 
-	if a.finderOpen {
+	if finderOf(a) != nil {
 		t.Fatal("Esc should close the finder")
 	}
-	if len(a.finderQuery) != 0 {
-		t.Fatalf("query should be cleared after close, got %q", string(a.finderQuery))
+	// Reopening must start fresh — the closed modal (and its query /
+	// selection) is discarded wholesale, never resurrected.
+	a.openFinder()
+	if got := string(finderOf(a).field.value); got != "" {
+		t.Fatalf("reopened finder should start with an empty query, got %q", got)
+	}
+	if finderOf(a).selected != 0 {
+		t.Fatalf("reopened finder should start at selection 0, got %d", finderOf(a).selected)
 	}
 }
 
@@ -194,15 +200,15 @@ func TestFinderKey_EscClosesModal(t *testing.T) {
 func TestFinderMouse_ClickOpensRow(t *testing.T) {
 	a, dir := withFinder(t)
 	a.openFinder()
-	if len(a.finderResults) < 2 {
-		t.Fatalf("need at least 2 results for click test, got %d", len(a.finderResults))
+	if len(finderOf(a).results) < 2 {
+		t.Fatalf("need at least 2 results for click test, got %d", len(finderOf(a).results))
 	}
-	mx, my, _, _ := a.finderModalRect()
-	target := filepath.Join(dir, a.finderResults[1].Path)
+	mx, my, _, _ := finderOf(a).rect(a)
+	target := filepath.Join(dir, finderOf(a).results[1].Path)
 
-	a.handleFinderMouse(mx+5, my+4+1, tcell.Button1)
+	finderOf(a).handleMouse(a, mx+5, my+4+1, tcell.Button1)
 
-	if a.finderOpen {
+	if finderOf(a) != nil {
 		t.Fatal("modal should close after click-open")
 	}
 	if got := a.activeTabPtr().Path; got != target {
@@ -219,9 +225,9 @@ func TestFinderMouse_ClickOutsideCloses(t *testing.T) {
 	a.openFinder()
 	tabsBefore := len(a.tabs)
 
-	a.handleFinderMouse(0, 0, tcell.Button1)
+	finderOf(a).handleMouse(a, 0, 0, tcell.Button1)
 
-	if a.finderOpen {
+	if finderOf(a) != nil {
 		t.Fatal("modal should close on outside click")
 	}
 	if len(a.tabs) != tabsBefore {
@@ -238,7 +244,7 @@ func TestLeader_PFiresFinder(t *testing.T) {
 	} else {
 		action(a)
 	}
-	if !a.finderOpen {
+	if finderOf(a) == nil {
 		t.Fatal("Esc-p should open the finder")
 	}
 }
