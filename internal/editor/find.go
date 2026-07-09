@@ -161,24 +161,6 @@ func (t *Tab) FindPrev() {
 	t.FocusCurrentMatch()
 }
 
-// matchAtRune returns the index into FindMatches of the match that
-// covers (line, col), or -1 when none does. The renderer calls this once
-// per visible cell, so the implementation has to stay cheap — a linear
-// scan is fine for realistic file sizes (hundreds of matches at most),
-// and avoids the overhead of building a per-line index. If this ever
-// shows up in a profile, switch to a sorted-by-line bsearch.
-func (t *Tab) matchAtRune(line, col int) int {
-	for i, m := range t.FindMatches {
-		if m.Line != line {
-			continue
-		}
-		if col >= m.Col && col < m.Col+m.Width {
-			return i
-		}
-	}
-	return -1
-}
-
 // ClearFind drops every piece of find state. The app calls this when the
 // buffer has been edited enough that the cached match list is stale and
 // can't safely be re-used; the user will re-type their query.

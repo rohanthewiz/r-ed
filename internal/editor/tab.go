@@ -87,6 +87,12 @@ type Tab struct {
 	// real tab; a 2-space-indented file gets two spaces. Mixed-style
 	// files take the dominant signal.
 	IndentUnit string
+
+	// DecoSources are external decoration producers (git diff marks,
+	// LSP diagnostics, …) consulted on every render, in order, before
+	// the built-in selection/find sources. See decoration.go for the
+	// span model and merge precedence.
+	DecoSources []DecorationSource
 }
 
 // NewTab opens path and returns a Tab. If the file does not exist, the tab
@@ -529,8 +535,17 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 		}
 	}
 
-	selStart, selEnd := PosOrdered(t.Anchor, t.Cursor)
-	hasSel := t.HasSelection()
+	// Collect decoration spans and gutter marks for the visible window
+	// once per frame; the row loop below merges them over the syntax
+	// grid. Selection and find highlighting arrive through here too —
+	// they're the built-in sources (see decoration.go).
+	spans, marks := t.collectDecorations(th, t.ScrollY, t.ScrollY+h-1)
+	markByLine := make(map[int]GutterMark, len(marks))
+	for _, mk := range marks {
+		// Map overwrite = "latest source wins", the same precedence rule
+		// spans use.
+		markByLine[mk.Line] = mk
+	}
 
 	contentX := x + gutterWidth + 1
 	contentW := w - gutterWidth - 1
@@ -569,7 +584,15 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 			scr.SetContent(x+i, cy, r, nil, gutterStyle)
 		}
 
-		// Line content, with syntax styles, selection bg, and line bg.
+		// Gutter mark column — the single cell between the numbers and
+		// the code. Blank on unmarked lines, so with no sources active
+		// the layout is pixel-identical to the pre-decoration renderer.
+		if mk, ok := markByLine[lineIdx]; ok {
+			markStyle := tcell.StyleDefault.Background(lineBg).Foreground(mk.FG)
+			scr.SetContent(x+gutterWidth, cy, mk.Glyph, nil, markStyle)
+		}
+
+		// Line content: effective styles first, then the paint walk.
 		// We walk from the start of the line so tab stops anchor to col 0
 		// — a tab one cell into the line still expands to the next stop,
 		// not the next-stop-from-the-scroll-offset. ScrollX skips runes;
@@ -578,6 +601,26 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 		var styles []tcell.Style
 		if lineIdx < len(t.Styles) {
 			styles = t.Styles[lineIdx]
+		}
+		// Resolve each rune's final style up front — syntax + row bg,
+		// then span deltas in precedence order — so the paint loop
+		// below stays a straight walk (it already has tab-stop
+		// bookkeeping to carry). O(lineLen + coveredCells) per row,
+		// which beats the per-cell match probing this replaced.
+		rowStyles := make([]tcell.Style, len(runes))
+		for i := range rowStyles {
+			st := bgStyle
+			if i < len(styles) {
+				st = styles[i]
+			}
+			rowStyles[i] = st.Background(lineBg)
+		}
+		for _, sp := range spans {
+			if s, e, ok := sp.colRange(lineIdx, len(runes)); ok {
+				for i := s; i < e; i++ {
+					rowStyles[i] = sp.Delta.Apply(rowStyles[i])
+				}
+			}
 		}
 		scrollVisual := LineVisualCol(runes, t.ScrollX)
 		visualCol := 0 // visual cell offset from the start of the LINE
@@ -588,24 +631,7 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 				// The rune's first cell shows the actual glyph (or ' '
 				// for tabs); padding cells for a multi-cell tab show a
 				// space so the trailing tab area still gets the right bg.
-				st := bgStyle
-				if runeIdx < len(styles) {
-					st = styles[runeIdx]
-				}
-				st = st.Background(lineBg)
-				if hasSel {
-					p := Position{Line: lineIdx, Col: runeIdx}
-					if !PosLess(p, selStart) && PosLess(p, selEnd) {
-						st = st.Background(th.Selection)
-					}
-				}
-				if mIdx := t.matchAtRune(lineIdx, runeIdx); mIdx >= 0 {
-					if mIdx == t.FindIndex {
-						st = st.Background(th.FindCurrent).Foreground(th.BG)
-					} else {
-						st = st.Background(th.FindMatch)
-					}
-				}
+				st := rowStyles[runeIdx]
 				glyph := r
 				if r == '\t' {
 					glyph = ' '

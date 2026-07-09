@@ -44,6 +44,7 @@ internal/app/app.go           Event loop, layout, menu modal, splitter, all rend
 internal/editor/buffer.go     Position + Buffer ([]string lines), edit primitives
 internal/editor/tab.go        Tab: path, buffer, cursor, anchor, scroll, dirty state
 internal/editor/highlight.go  Chroma → []tcell.Style per line
+internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Render
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
 internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader (icons mode)
@@ -130,6 +131,15 @@ directly.
 keeps their `*Node` pointers (and their `Expanded` state). New entries
 get fresh nodes; gone entries are dropped. This is what makes the
 10-second auto-refresh feel non-jarring — open folders stay open.
+
+### Decoration layer (editor/decoration.go)
+Any "paint something over the code" feature is a `DecorationSource`
+producing `Span`s (range + `StyleDelta`) and `GutterMark`s — never a
+new branch inside `Tab.Render`'s paint loop. External sources register
+via `Tab.DecoSources`; built-ins (selection, find) run last so merge
+precedence is: syntax < external annotations < selection < find. The
+gutter mark column is the single cell at `x + gutterWidth`, between
+the line numbers and the code.
 
 ### Three-way external-change reconciliation (app.go)
 On each tree-refresh tick, `reconcileOpenTabsWithDisk` checks each open

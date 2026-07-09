@@ -203,21 +203,3 @@ func TestTab_ClearFind(t *testing.T) {
 		t.Fatalf("ClearFind left residue: %+v", tab)
 	}
 }
-
-// TestMatchAtRune_HitAndMiss proves the per-cell renderer probe finds
-// the right match index for cells inside a hit and -1 outside.
-func TestMatchAtRune_HitAndMiss(t *testing.T) {
-	tab, _ := NewTab("")
-	tab.Buffer = NewBuffer("foo bar foo")
-	tab.SetFindQuery("foo") // matches at (0,0) and (0,8)
-
-	if got := tab.matchAtRune(0, 1); got != 0 {
-		t.Fatalf("col 1 should be inside match 0, got %d", got)
-	}
-	if got := tab.matchAtRune(0, 4); got != -1 {
-		t.Fatalf("col 4 (the space) should miss, got %d", got)
-	}
-	if got := tab.matchAtRune(0, 9); got != 1 {
-		t.Fatalf("col 9 should be inside match 1, got %d", got)
-	}
-}

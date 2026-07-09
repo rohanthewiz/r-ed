@@ -97,6 +97,11 @@ keeps its `_test.go` sibling.
 - [x] Phase 2 — command palette (done 2026-07-08; `internal/app/palette.go`,
       Esc-a leader + "Command palette" menu row in the Search group;
       pluggable `paletteSources()` seam ready for files/symbols/git)
-- [ ] Phase 3 — decoration layer
+- [x] Phase 3 — decoration layer (done 2026-07-08;
+      `internal/editor/decoration.go` — Span/StyleDelta/GutterMark +
+      DecorationSource; selection & find migrated as built-in sources;
+      gutter mark column renders at `x+gutterWidth`; external sources
+      register via `Tab.DecoSources`, precedence: syntax < external <
+      selection < find)
 - [ ] Phase 4 — git integration
 - [ ] Phase 5 — LSP
