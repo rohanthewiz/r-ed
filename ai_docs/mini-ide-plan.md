@@ -94,7 +94,9 @@ keeps its `_test.go` sibling.
 - [x] Phase 1 — modal stack (done 2026-07-08; async tab-identity check
       turned out to be a non-issue — format/custom-action completions
       already resolve tabs by path)
-- [ ] Phase 2 — command palette
+- [x] Phase 2 — command palette (done 2026-07-08; `internal/app/palette.go`,
+      Esc-a leader + "Command palette" menu row in the Search group;
+      pluggable `paletteSources()` seam ready for files/symbols/git)
 - [ ] Phase 3 — decoration layer
 - [ ] Phase 4 — git integration
 - [ ] Phase 5 — LSP

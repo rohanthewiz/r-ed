@@ -47,6 +47,9 @@ func leaderBindings() []leaderBinding {
 		{'/', (*App).menuToggleLineComment},
 		{'f', (*App).openFind},
 		{'p', (*App).openFinder},
+		// 'a' for "actions" — the palette is the searchable twin of the
+		// ≡ action menu, so it borrows the menu's vocabulary.
+		{'a', (*App).openPalette},
 	}
 }
 

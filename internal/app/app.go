@@ -186,6 +186,7 @@ func builtinMenuGroups() [][]menuItemDef {
 		},
 		// Search
 		{
+			{label: paletteMenuLabel, action: (*App).menuCommandPalette, enabled: alwaysTrue},
 			{label: "Find in file", action: (*App).menuFind, enabled: (*App).hasFindable},
 			{label: "Find file in project", action: (*App).menuFindFile, enabled: (*App).hasFinder},
 		},
