@@ -147,6 +147,21 @@ type Result struct {
 	MatchedIndexes []int
 }
 
+// Paths returns the indexed project-relative paths, or nil while the
+// index is idle / building — the same contract as Search, so callers
+// (the command palette's file source) render nothing rather than a
+// half-built list. The returned slice is the live snapshot, safe to
+// read without copying: builds replace it wholesale via Rebuild and
+// nothing mutates it in place.
+func (f *Finder) Paths() []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.state == StateIdle || f.state == StateBuilding {
+		return nil
+	}
+	return f.paths
+}
+
 // Search runs the fuzzy scorer over the cached index and returns
 // the top `limit` results ranked by score, breaking ties by
 // alphabetical path so two equally-good matches always render in

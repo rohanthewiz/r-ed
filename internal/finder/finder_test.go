@@ -169,3 +169,35 @@ func TestFinder_InvalidateResetsState(t *testing.T) {
 		t.Fatalf("state after Invalidate: got %v, want StateIdle", f.State())
 	}
 }
+
+// TestFinder_PathsMirrorsSearchContract pins the Paths accessor the
+// command palette's file source consumes: nil before the first build
+// (so the palette shows nothing rather than a half-built list), the
+// full indexed path set once Ready.
+func TestFinder_PathsMirrorsSearchContract(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "a.go", "package a")
+	mustWrite(t, dir, "sub/b.go", "package b")
+
+	f := New(dir)
+	if got := f.Paths(); got != nil {
+		t.Fatalf("Paths before Rebuild should be nil, got %v", got)
+	}
+
+	done := make(chan struct{})
+	f.Rebuild(func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rebuild did not finish in 2s")
+	}
+
+	paths := f.Paths()
+	seen := map[string]bool{}
+	for _, p := range paths {
+		seen[p] = true
+	}
+	if len(paths) != 2 || !seen["a.go"] || !seen["sub/b.go"] {
+		t.Fatalf("Paths = %v, want a.go + sub/b.go", paths)
+	}
+}

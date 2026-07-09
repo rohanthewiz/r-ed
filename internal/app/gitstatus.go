@@ -37,6 +37,11 @@ type gitStatus struct {
 	IsRepo     bool
 	DirtyFiles map[string]bool
 	Branch     string
+	// HasStaged reports whether anything sits in the index waiting to
+	// be committed. It gates the "Commit staged" menu row — a commit
+	// with an empty index only produces a git error, so the row stays
+	// dimmed until a stage actually happened.
+	HasStaged bool
 }
 
 // loadGitStatus inspects rootDir and returns the set of dirty file paths
@@ -71,7 +76,32 @@ func loadGitStatus(rootDir string) gitStatus {
 	}
 
 	dirty := parsePorcelain(out, toplevel)
-	return gitStatus{IsRepo: true, DirtyFiles: dirty, Branch: loadGitBranch(rootDir)}
+	return gitStatus{
+		IsRepo:     true,
+		DirtyFiles: dirty,
+		Branch:     loadGitBranch(rootDir),
+		HasStaged:  hasStagedPorcelain(out),
+	}
+}
+
+// hasStagedPorcelain reports whether any porcelain v1 line carries an
+// index-side (staged) change. The X column — the first byte of each
+// line — is the index status: anything except ' ' (unmodified),
+// '?' (untracked) and '!' (ignored) means `git add` has already
+// touched that entry. Reuses the same ≥4-byte line guard as
+// parsePorcelain so malformed tails are skipped, not misread.
+func hasStagedPorcelain(out []byte) bool {
+	for _, raw := range bytes.Split(out, []byte{'\n'}) {
+		if len(raw) < 4 {
+			continue
+		}
+		switch raw[0] {
+		case ' ', '?', '!':
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // loadGitBranch returns the current branch name for rootDir, or a short

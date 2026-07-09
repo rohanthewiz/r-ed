@@ -8,11 +8,15 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rohanthewiz/r-ed/internal/customactions"
+	"github.com/rohanthewiz/r-ed/internal/finder"
 )
 
 // paletteOf returns the active modal as a *paletteModal, or nil when
@@ -304,4 +308,123 @@ func screenText(a *App) string {
 		out = append(out, '\n')
 	}
 	return string(out)
+}
+
+// buildFinderT wires a ready file index onto the app, blocking until
+// the background build lands so tests see a deterministic path list.
+func buildFinderT(t *testing.T, a *App) {
+	t.Helper()
+	a.finder = finder.New(a.rootDir)
+	done := make(chan struct{})
+	a.finder.Rebuild(func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("finder build did not finish within 3s")
+	}
+}
+
+// TestOpenPalette_IncludesFileItems pins the second source: with a
+// ready index, project files list after the actions (empty query =
+// source order, actions first) and Enter on a file row opens it.
+func TestOpenPalette_IncludesFileItems(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFileT(t, filepath.Join(dir, "alpha.go"), "package a\n")
+	writeFileT(t, filepath.Join(sub, "beta.txt"), "b\n")
+
+	a := newTestApp(t, dir)
+	buildFinderT(t, a)
+	a.openPalette()
+	m := paletteOf(a)
+
+	labels := map[string]int{}
+	for i, it := range m.items {
+		labels[it.label] = i
+	}
+	alphaIdx, ok := labels["alpha.go"]
+	if !ok {
+		t.Fatalf("palette items missing alpha.go: %v", labels)
+	}
+	if _, ok := labels[filepath.Join("sub", "beta.txt")]; !ok {
+		t.Fatalf("palette items missing sub/beta.txt: %v", labels)
+	}
+	if quitIdx := labels["Quit editor"]; quitIdx > alphaIdx {
+		t.Fatal("actions must list before files on an empty query")
+	}
+
+	// Filter down to the file and run it — the tab must open.
+	typePalette(a, "alpha")
+	m.runSelected(a)
+	if got := a.activeTabPtr(); got == nil || filepath.Base(got.Path) != "alpha.go" {
+		t.Fatalf("selecting a file row should open it; active tab = %+v", got)
+	}
+}
+
+// TestPalette_RecollectsOnIndexRebuild verifies the streaming-in path:
+// a palette opened before the first index build shows no file rows,
+// and the finderRebuiltEvent posted by the build re-collects sources
+// so the files appear without reopening the modal.
+func TestPalette_RecollectsOnIndexRebuild(t *testing.T) {
+	dir := t.TempDir()
+	writeFileT(t, filepath.Join(dir, "alpha.go"), "package a\n")
+
+	a := newTestApp(t, dir)
+	a.finder = finder.New(a.rootDir) // idle — openPalette kicks the build
+	a.openPalette()
+
+	m := paletteOf(a)
+	for _, it := range m.items {
+		if it.label == "alpha.go" {
+			t.Fatal("file rows must not exist before the index is built")
+		}
+	}
+
+	// Pump the rebuilt event the build posts and expect re-collection.
+	pumpAppEvents(t, a, func() bool {
+		for _, it := range paletteOf(a).items {
+			if it.label == "alpha.go" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestOpenPicker_TitleAndCallerItems pins the picker mode: the given
+// title heads the frame, the caller's items are taken verbatim (no
+// sources), and Enter runs the chosen item's action.
+func TestOpenPicker_TitleAndCallerItems(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	ran := ""
+	a.openPicker("Pick a thing", []paletteItem{
+		{label: "one", run: func(*App) { ran = "one" }},
+		{label: "two", run: func(*App) { ran = "two" }},
+	})
+
+	m := paletteOf(a)
+	if m == nil || m.sourced {
+		t.Fatalf("picker should be a non-sourced paletteModal, got %T", a.modal)
+	}
+	if len(m.items) != 2 {
+		t.Fatalf("picker items = %d, want the 2 given", len(m.items))
+	}
+
+	m.draw(a)
+	a.screen.Show()
+	if !strings.Contains(screenText(a), "Pick a thing") {
+		t.Fatal("picker should draw its own title")
+	}
+
+	typePalette(a, "two")
+	m.runSelected(a)
+	if ran != "two" {
+		t.Fatalf("ran = %q, want the filtered selection to fire", ran)
+	}
+	if a.modal != nil {
+		t.Fatal("running a picker item should close the modal")
+	}
 }

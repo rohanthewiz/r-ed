@@ -194,6 +194,9 @@ func builtinMenuGroups() [][]menuItemDef {
 		{
 			{label: "Next change", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
 			{label: "Previous change", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
+			{label: "Stage file", action: (*App).menuGitStageFile, enabled: (*App).hasStageableFile},
+			{label: "Commit staged", action: (*App).menuGitCommit, enabled: (*App).hasGitStaged},
+			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
 		},
 		// Code intelligence (LSP-backed; rows dim when no server)
 		{
@@ -372,6 +375,15 @@ type App struct {
 	// a git repo. Updated on the same 10-second tick as refreshGitStatus.
 	gitBranch string
 
+	// gitIsRepo / gitHasStaged mirror the last git-status snapshot:
+	// whether the project root sits inside a work tree at all, and
+	// whether anything is staged for commit. They exist so the menu
+	// predicates for the git command rows (Stage file / Commit staged /
+	// Switch branch) are pure field reads — running `git` inside an
+	// enabled() check would fork on every menu draw.
+	gitIsRepo    bool
+	gitHasStaged bool
+
 	// fileDiffs holds the latest parsed `git diff -U0` hunks per open
 	// file path, feeding the gutter marks and hunk navigation. Written
 	// only from the main loop (handleGitDiff); nil until the first
@@ -491,6 +503,8 @@ func (a *App) refreshGitStatus() {
 		return
 	}
 	st := loadGitStatus(a.rootDir)
+	a.gitIsRepo = st.IsRepo
+	a.gitHasStaged = st.HasStaged
 	if !st.IsRepo {
 		a.tree.DirtyFiles = nil
 		a.tree.DirtyFolders = nil
@@ -580,14 +594,23 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleGitDiff(e)
 	case *customActionDoneEvent:
 		a.handleCustomActionDone(e)
+	case *gitCmdDoneEvent:
+		a.handleGitCmdDone(e)
 	case *formatDoneEvent:
 		a.handleFormatDone(e)
 	case *finderRebuiltEvent:
 		// The background indexer just finished. Re-run the visible
 		// query so "Indexing…" gives way to real results without
 		// the user having to type or wait for the next keystroke.
+		// A sourced palette re-collects too — its file rows come from
+		// the same index. Pickers (sourced=false) keep their
+		// caller-owned items.
 		if m, ok := a.modal.(*finderModal); ok {
 			m.refresh(a)
+		}
+		if m, ok := a.modal.(*paletteModal); ok && m.sourced {
+			m.collectItems(a)
+			m.refresh()
 		}
 	case *lspReadyEvent:
 		a.handleLSPReady(e)
@@ -659,6 +682,20 @@ func (a *App) handleCustomActionDone(e *customActionDoneEvent) {
 // Pulled out so handleCustomActionDone reads as the routing decision
 // it really is.
 func splitErrorOutput(runErr error, out []byte) []string {
+	body := errorBodyLines(runErr, out, "… (truncated; see actions.log)")
+	if logPath := customactions.LogPath(); logPath != "" {
+		body = append(body, "", "Full output: "+logPath)
+	}
+	return body
+}
+
+// errorBodyLines is the shared core of failed-subprocess reporting: an
+// opening line summarising the exit error, then up to a handful of
+// lines of trimmed combined output, with truncNote appended when the
+// output overflows the cap. Split from splitErrorOutput so the git
+// command handler can reuse the shape without inheriting the
+// custom-actions log-path footer (git runs aren't logged there).
+func errorBodyLines(runErr error, out []byte, truncNote string) []string {
 	const maxLines = 8
 	const maxLineWidth = 78
 
@@ -675,13 +712,10 @@ func splitErrorOutput(runErr error, out []byte) []string {
 			body = append(body, ln)
 			count++
 			if count >= maxLines {
-				body = append(body, "… (truncated; see actions.log)")
+				body = append(body, truncNote)
 				break
 			}
 		}
-	}
-	if logPath := customactions.LogPath(); logPath != "" {
-		body = append(body, "", "Full output: "+logPath)
 	}
 	return body
 }

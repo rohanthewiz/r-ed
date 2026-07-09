@@ -13,15 +13,22 @@
 //
 // The palette is deliberately built on a pluggable-source seam:
 // paletteSources() returns a list of functions that each contribute
-// items. Today the only source is the action menu inventory (built-ins
-// + custom actions, via menuLayout). Later phases plug in more sources
-// — files, LSP symbols, git commands — without touching the modal
-// itself; they just merge more items into the same ranked list.
+// items. Two sources exist today: the action menu inventory (built-ins
+// + custom actions, via menuLayout) and the finder's file index, so
+// one Esc-a surface fuzzy-searches actions and project files together.
+// Later sources (LSP symbols, …) merge into the same ranked list
+// without touching the modal.
+//
+// The modal itself doubles as a generic picker: openPicker shows a
+// caller-supplied item list under its own title (the branch switcher
+// uses this), reusing the palette's whole interaction grammar for free.
 
 package app
 
 import (
+	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rohanthewiz/r-ed/internal/finder"
@@ -66,10 +73,11 @@ type paletteMatch struct {
 type paletteSource func(a *App) []paletteItem
 
 // paletteSources returns the registered item sources in merge order.
-// This is the "fuzzy everything" seam: later phases append file,
-// symbol, and git sources here and the palette UI stays untouched.
+// Actions come first: on an empty query the palette reads top-down as
+// the action menu, and refresh's stable sort breaks score ties in
+// source order, so an action never hides below a same-scored file.
 func paletteSources() []paletteSource {
-	return []paletteSource{paletteActionItems}
+	return []paletteSource{paletteActionItems, paletteFileItems}
 }
 
 // paletteActionItems adapts the action-menu inventory (menuLayout:
@@ -98,10 +106,42 @@ func paletteActionItems(a *App) []paletteItem {
 	return out
 }
 
+// paletteFileItems adapts the finder's file index into palette items,
+// so the palette fuzzy-searches project files alongside actions —
+// same index, same scorer, same open-on-Enter behavior as the
+// dedicated finder modal. Returns nil while the index is idle or
+// building (mirroring Finder.Search's contract); the rebuilt event
+// re-collects once paths exist.
+func paletteFileItems(a *App) []paletteItem {
+	if a.finder == nil {
+		return nil
+	}
+	paths := a.finder.Paths()
+	out := make([]paletteItem, 0, len(paths))
+	for _, rel := range paths {
+		rel := rel // capture per-iteration for the closure
+		out = append(out, paletteItem{
+			label: rel,
+			run: func(app *App) {
+				app.openFile(filepath.Join(app.rootDir, rel))
+			},
+		})
+	}
+	return out
+}
+
 // paletteModal is the transient UI state of one palette session: the
 // query field, the highlighted row, the gathered inventory, and the
 // scored view of it for the current query.
 type paletteModal struct {
+	// title is the frame heading — paletteMenuLabel for the real
+	// palette, the caller's choice for pickers ("Switch branch").
+	title string
+	// sourced marks a modal whose items came from paletteSources, so
+	// the finder-rebuilt event knows to re-collect them (file items may
+	// have just become available). Picker item lists are caller-owned
+	// and must never be clobbered by a background index build.
+	sourced  bool
 	field    textField
 	selected int
 	items    []paletteItem
@@ -109,13 +149,39 @@ type paletteModal struct {
 }
 
 // openPalette gathers items from every source and shows the palette.
+// A stale file index kicks off a background rebuild (same contract as
+// openFinder) — the rebuilt event re-collects sources so file rows
+// stream in without the user reopening the modal.
 func (a *App) openPalette() {
-	m := &paletteModal{}
+	m := &paletteModal{title: paletteMenuLabel, sourced: true}
+	a.openModal(m)
+	m.collectItems(a)
+	if a.finder != nil && a.finder.State() != finder.StateReady {
+		scr := a.screen
+		a.finder.Rebuild(func() {
+			_ = scr.PostEvent(&finderRebuiltEvent{when: time.Now()})
+		})
+	}
+	m.refresh()
+}
+
+// openPicker shows a caller-supplied item list under its own title —
+// the palette modal reused as a generic fuzzy chooser. Items are taken
+// as-is; sources are not consulted.
+func (a *App) openPicker(title string, items []paletteItem) {
+	m := &paletteModal{title: title, items: items}
+	a.openModal(m)
+	m.refresh()
+}
+
+// collectItems (re)gathers the inventory from every registered source.
+// Called at open and again when the finder index finishes a rebuild,
+// so it must be idempotent — hence the slice reset.
+func (m *paletteModal) collectItems(a *App) {
+	m.items = m.items[:0]
 	for _, src := range paletteSources() {
 		m.items = append(m.items, src(a)...)
 	}
-	a.openModal(m)
-	m.refresh()
 }
 
 // menuCommandPalette is the ≡ menu entry that opens the palette —
@@ -249,7 +315,7 @@ func (m *paletteModal) rect(a *App) (x, y, w, h int) {
 // Layout (relY):
 //
 //	0     top border
-//	1     title — "Command palette    esc"
+//	1     title — m.title + "    esc"
 //	2     divider
 //	3     input          [ query…              12/34 ]
 //	4..N  action rows
@@ -258,7 +324,7 @@ func (m *paletteModal) draw(a *App) {
 	mx, my, mw, mh := m.rect(a)
 	c := a.chrome()
 	hitStyle := tcell.StyleDefault.Background(c.bg).Foreground(a.theme.FindCurrent).Bold(true)
-	c.drawFrame(a.screen, mx, my, mw, mh, paletteMenuLabel)
+	c.drawFrame(a.screen, mx, my, mw, mh, m.title)
 
 	// Input row — the right side leaves room for the count tail.
 	inputStyle := tcell.StyleDefault.Background(a.theme.BG).Foreground(a.theme.Text)

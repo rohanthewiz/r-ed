@@ -413,6 +413,56 @@ func initRepo(t *testing.T) string {
 }
 
 // gitRun invokes git in cwd. Fails the test on non-zero exit so a broken
+// TestHasStagedPorcelain pins the X-column classification: index-side
+// codes count as staged, while unmodified / untracked / ignored first
+// columns don't — the exact set that decides whether "Commit staged"
+// would succeed.
+func TestHasStagedPorcelain(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"empty output", "", false},
+		{"worktree-only change", " M file.go\n", false},
+		{"untracked", "?? new.go\n", false},
+		{"ignored", "!! bin/\n", false},
+		{"staged modify", "M  file.go\n", true},
+		{"staged add", "A  new.go\n", true},
+		{"staged rename", "R  old.go -> new.go\n", true},
+		{"staged then edited again", "MM file.go\n", true},
+		{"mixed, staged last", " M a.go\n?? b.go\nD  c.go\n", true},
+		{"short garbage line", "M\n", false},
+	}
+	for _, tc := range cases {
+		if got := hasStagedPorcelain([]byte(tc.out)); got != tc.want {
+			t.Errorf("%s: hasStagedPorcelain = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestLoadGitStatus_HasStaged exercises the flag end-to-end against a
+// real repo through the untracked → staged → committed lifecycle.
+func TestLoadGitStatus_HasStaged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not on PATH")
+	}
+	repo := initRepo(t)
+	writeFileT(t, filepath.Join(repo, "f.txt"), "x\n")
+
+	if st := loadGitStatus(repo); st.HasStaged {
+		t.Fatal("untracked file alone must not read as staged")
+	}
+	gitRun(t, repo, "add", "f.txt")
+	if st := loadGitStatus(repo); !st.HasStaged {
+		t.Fatal("added file should read as staged")
+	}
+	gitRun(t, repo, "commit", "-q", "-m", "init")
+	if st := loadGitStatus(repo); st.HasStaged {
+		t.Fatal("clean tree after commit must not read as staged")
+	}
+}
+
 // fixture doesn't masquerade as a code bug.
 func gitRun(t *testing.T, cwd string, args ...string) {
 	t.Helper()

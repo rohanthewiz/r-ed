@@ -175,7 +175,10 @@ context, finder) is a struct implementing the `modal` interface
 slot — nil means none. `openModal` enforces mutual exclusivity. When
 adding a modal: implement the interface, compute button geometry in ONE
 method returning `btnRect`s that both draw and mouse hit-testing
-consume, and reuse `textField` for any single-line input. Do NOT add
+consume, and reuse `textField` for any single-line input. For any
+"choose one from a list" UI, reuse the palette as a fuzzy picker via
+`a.openPicker(title, items)` (the branch switcher does this) — don't
+write a new list modal. Do NOT add
 per-modal fields back onto App or new branches to handleKey/handleMouse.
 After any workspace mutation call `a.workspaceChanged()` — never the
 individual tree/git/finder refreshes.
