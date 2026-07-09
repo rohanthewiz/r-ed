@@ -42,6 +42,13 @@ type Theme struct {
 	FindMatch   tcell.Color
 	FindCurrent tcell.Color
 
+	// Git gutter marks (the mark column between line numbers and code).
+	// Follows the near-universal editor convention: green = added,
+	// blue = modified, red = deleted — users read these without a key.
+	GitAdded    tcell.Color
+	GitModified tcell.Color
+	GitDeleted  tcell.Color
+
 	// --- File tree ---
 	FolderColor tcell.Color
 	FileColor   tcell.Color
@@ -87,6 +94,11 @@ func Default() Theme {
 		// so the active match jumps off the page.
 		FindMatch:   tcell.NewRGBColor(0x6f, 0x52, 0x1f),
 		FindCurrent: tcell.NewRGBColor(0xe0, 0xaf, 0x68),
+
+		// Git gutter — the standard Tokyo Night green / blue / red.
+		GitAdded:    tcell.NewRGBColor(0x9e, 0xce, 0x6a),
+		GitModified: tcell.NewRGBColor(0x7a, 0xa2, 0xf7),
+		GitDeleted:  tcell.NewRGBColor(0xf7, 0x76, 0x8e),
 
 		// Tree.
 		FolderColor: tcell.NewRGBColor(0x7a, 0xa2, 0xf7),

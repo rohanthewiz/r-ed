@@ -190,6 +190,11 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Find in file", action: (*App).menuFind, enabled: (*App).hasFindable},
 			{label: "Find file in project", action: (*App).menuFindFile, enabled: (*App).hasFinder},
 		},
+		// Git
+		{
+			{label: "Next change", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
+			{label: "Previous change", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
+		},
 		// File actions
 		{
 			{action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
@@ -360,6 +365,12 @@ type App struct {
 	// short commit SHA when HEAD is detached). Empty when the root isn't
 	// a git repo. Updated on the same 10-second tick as refreshGitStatus.
 	gitBranch string
+
+	// fileDiffs holds the latest parsed `git diff -U0` hunks per open
+	// file path, feeding the gutter marks and hunk navigation. Written
+	// only from the main loop (handleGitDiff); nil until the first
+	// diff lands, and nil-map reads are safe, so no eager init needed.
+	fileDiffs map[string][]diffHunk
 
 	// customActions is the list of user-configured shell-out actions
 	// loaded from ~/.config/r-ed/actions.json at startup. When
@@ -552,6 +563,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleAutoScroll()
 	case *treeRefreshEvent:
 		a.refreshTreeNow()
+	case *gitDiffEvent:
+		a.handleGitDiff(e)
 	case *customActionDoneEvent:
 		a.handleCustomActionDone(e)
 	case *formatDoneEvent:
@@ -588,6 +601,7 @@ func (a *App) workspaceChanged() {
 func (a *App) refreshTreeNow() {
 	a.workspaceChanged()
 	a.reconcileOpenTabsWithDisk()
+	a.requestOpenTabDiffs()
 }
 
 // handleCustomActionDone surfaces the result of an async custom-action
@@ -1414,6 +1428,10 @@ func (a *App) openFile(path string) {
 		a.flash(fmt.Sprintf("Error: %v", err))
 		return
 	}
+	// Wire the diff gutter in and kick off the first diff so marks
+	// appear as soon as the async result lands, not at the next tick.
+	t.DecoSources = append(t.DecoSources, gitDiffSource{app: a})
+	a.requestFileDiff(path)
 	a.tabs = append(a.tabs, t)
 	a.activeTab = len(a.tabs) - 1
 	a.flash(fmt.Sprintf("Opened %s", filepath.Base(path)))
@@ -1444,6 +1462,7 @@ func (a *App) saveTabAt(idx int) bool {
 		return false
 	}
 	a.refreshGitStatus()
+	a.requestFileDiff(tab.Path)
 	a.flash(fmt.Sprintf("Saved %s", filepath.Base(tab.Path)))
 	// Format-on-save runs after the disk write succeeds, so a broken
 	// formatter never blocks the user's save from landing. The
@@ -1520,6 +1539,9 @@ func (a *App) closeTab(idx int) {
 	if idx < 0 || idx >= len(a.tabs) {
 		return
 	}
+	// Drop the closed file's cached diff — openFile dedupes by path,
+	// so no other tab can still be showing it.
+	delete(a.fileDiffs, a.tabs[idx].Path)
 	a.tabs = append(a.tabs[:idx], a.tabs[idx+1:]...)
 	if a.activeTab >= len(a.tabs) {
 		a.activeTab = len(a.tabs) - 1

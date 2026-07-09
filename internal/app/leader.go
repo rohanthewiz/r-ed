@@ -50,6 +50,10 @@ func leaderBindings() []leaderBinding {
 		// 'a' for "actions" — the palette is the searchable twin of the
 		// ≡ action menu, so it borrows the menu's vocabulary.
 		{'a', (*App).openPalette},
+		// 'h' for "hunk" — jump between git-changed regions. Shifted
+		// variant walks backwards, mirroring find's Enter/Shift-Enter.
+		{'h', (*App).menuNextHunk},
+		{'H', (*App).menuPrevHunk},
 	}
 }
 

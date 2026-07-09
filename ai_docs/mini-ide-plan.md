@@ -103,5 +103,9 @@ keeps its `_test.go` sibling.
       gutter mark column renders at `x+gutterWidth`; external sources
       register via `Tab.DecoSources`, precedence: syntax < external <
       selection < find)
-- [ ] Phase 4 — git integration
+- [x] Phase 4 — git integration (core done 2026-07-09;
+      `internal/app/gitdiff.go` — async `git diff -U0` per open tab on
+      open/save/10s-tick → gutter marks via gitDiffSource; Next/Previous
+      change in the ≡ Git group + Esc-h / Esc-H leaders. Stage / commit /
+      branch-switch palette commands remain future work as planned)
 - [ ] Phase 5 — LSP
