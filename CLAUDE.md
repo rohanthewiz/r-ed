@@ -45,6 +45,8 @@ internal/editor/buffer.go     Position + Buffer ([]string lines), edit primitive
 internal/editor/tab.go        Tab: path, buffer, cursor, anchor, scroll, dirty state
 internal/editor/highlight.go  Chroma → []tcell.Style per line
 internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Render
+internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib only)
+internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
 internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader (icons mode)
@@ -140,6 +142,26 @@ via `Tab.DecoSources`; built-ins (selection, find) run last so merge
 precedence is: syntax < external annotations < selection < find. The
 gutter mark column is the single cell at `x + gutterWidth`, between
 the line numbers and the code.
+
+### LSP integration (internal/lsp + app/lsp.go)
+The client is a hand-rolled JSON-RPC subset — do NOT add an LSP
+framework dependency. House rules it must keep obeying:
+
+- **Silent degradation**: no gopls on PATH / crash / timeout → the
+  editor works normally, no nagging. Same contract as formatters.
+- **Events only**: the read loop, start handshake, debounce timers,
+  and definition/hover requests all run off-loop and post
+  `lsp*Event`s; only the main loop touches `App.lsp`.
+- **Sync via `Tab.EditRev`**: every content mutation bumps it; the
+  post-event check (`lspAfterEvent`) compares against `syncedRev`
+  and arms a 300ms debounce. Saves flush pending changes BEFORE
+  didSave. New Tab mutation paths must bump `EditRev` or the server
+  silently diagnoses stale text.
+- Diagnostics are just another `DecorationSource` (registered after
+  the git source so the diag gutter dot outranks the git mark).
+- Leaders: Esc-d definition, Esc-i hover, Esc-o jump back.
+- Tests kill the integration (`a.lsp.dead = true` in newTestApp) so
+  openFile can't spawn a real gopls; LSP tests inject `fakeLSPConn`.
 
 ### Three-way external-change reconciliation (app.go)
 On each tree-refresh tick, `reconcileOpenTabsWithDisk` checks each open

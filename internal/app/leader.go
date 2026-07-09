@@ -54,6 +54,12 @@ func leaderBindings() []leaderBinding {
 		// variant walks backwards, mirroring find's Enter/Shift-Enter.
 		{'h', (*App).menuNextHunk},
 		{'H', (*App).menuPrevHunk},
+		// LSP trio: 'd' definition, 'i' info (hover), 'o' back "out" of
+		// the jump — 'b' was tempting for back but reads as "buffer" to
+		// vim hands, and the plan pinned 'o' from the start.
+		{'d', (*App).menuGoToDefinition},
+		{'i', (*App).menuHoverInfo},
+		{'o', (*App).menuJumpBack},
 	}
 }
 

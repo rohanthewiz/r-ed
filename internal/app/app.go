@@ -195,6 +195,12 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Next change", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
 			{label: "Previous change", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
 		},
+		// Code intelligence (LSP-backed; rows dim when no server)
+		{
+			{label: "Go to definition", action: (*App).menuGoToDefinition, enabled: (*App).hasLSPActions},
+			{label: "Hover info", action: (*App).menuHoverInfo, enabled: (*App).hasLSPActions},
+			{label: "Jump back", action: (*App).menuJumpBack, enabled: (*App).hasNavBack},
+		},
 		// File actions
 		{
 			{action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
@@ -372,6 +378,12 @@ type App struct {
 	// diff lands, and nil-map reads are safe, so no eager init needed.
 	fileDiffs map[string][]diffHunk
 
+	// lsp holds the language-server integration state: the connection,
+	// per-document sync bookkeeping, diagnostics, and the definition
+	// back-navigation stack. Mutated only on the main loop; background
+	// work posts lsp*Events. See lsp.go.
+	lsp lspState
+
 	// customActions is the list of user-configured shell-out actions
 	// loaded from ~/.config/r-ed/actions.json at startup. When
 	// non-empty they prepend a new group to the action menu — see
@@ -525,6 +537,7 @@ func (a *App) stopTreeRefresh() {
 func (a *App) Close() {
 	a.stopTreeRefresh()
 	a.stopAutoScroll()
+	a.lspShutdown()
 	if a.screen != nil {
 		a.screen.Fini()
 	}
@@ -576,7 +589,24 @@ func (a *App) handleEvent(ev tcell.Event) {
 		if m, ok := a.modal.(*finderModal); ok {
 			m.refresh(a)
 		}
+	case *lspReadyEvent:
+		a.handleLSPReady(e)
+	case *lspExitEvent:
+		a.handleLSPExit()
+	case *lspDiagsEvent:
+		a.handleLSPDiags(e)
+	case *lspSyncEvent:
+		a.handleLSPSync(e)
+	case *lspDefinitionEvent:
+		a.handleLSPDefinition(e)
+	case *lspHoverEvent:
+		a.handleLSPHover(e)
 	}
+	// After every dispatch, let the LSP layer notice buffer edits and
+	// (re-)arm its didChange debounce. Runs unconditionally because
+	// edits arrive through many paths (keys, paste, modals, reloads on
+	// the refresh tick) and this is a few integer compares when idle.
+	a.lspAfterEvent()
 }
 
 // workspaceChanged re-syncs every subsystem that mirrors on-disk
@@ -1430,10 +1460,13 @@ func (a *App) openFile(path string) {
 	}
 	// Wire the diff gutter in and kick off the first diff so marks
 	// appear as soon as the async result lands, not at the next tick.
-	t.DecoSources = append(t.DecoSources, gitDiffSource{app: a})
+	// The diagnostics source registers after git so on a line that is
+	// both changed and broken, the diagnostic dot wins the mark cell.
+	t.DecoSources = append(t.DecoSources, gitDiffSource{app: a}, lspDiagSource{app: a})
 	a.requestFileDiff(path)
 	a.tabs = append(a.tabs, t)
 	a.activeTab = len(a.tabs) - 1
+	a.lspOpenDoc(t)
 	a.flash(fmt.Sprintf("Opened %s", filepath.Base(path)))
 }
 
@@ -1463,6 +1496,7 @@ func (a *App) saveTabAt(idx int) bool {
 	}
 	a.refreshGitStatus()
 	a.requestFileDiff(tab.Path)
+	a.lspDidSave(tab)
 	a.flash(fmt.Sprintf("Saved %s", filepath.Base(tab.Path)))
 	// Format-on-save runs after the disk write succeeds, so a broken
 	// formatter never blocks the user's save from landing. The
@@ -1540,8 +1574,10 @@ func (a *App) closeTab(idx int) {
 		return
 	}
 	// Drop the closed file's cached diff — openFile dedupes by path,
-	// so no other tab can still be showing it.
+	// so no other tab can still be showing it. Same for the LSP
+	// bookkeeping, which also tells the server the document is gone.
 	delete(a.fileDiffs, a.tabs[idx].Path)
+	a.lspCloseDoc(a.tabs[idx].Path)
 	a.tabs = append(a.tabs[:idx], a.tabs[idx+1:]...)
 	if a.activeTab >= len(a.tabs) {
 		a.activeTab = len(a.tabs) - 1
@@ -2246,8 +2282,9 @@ func (a *App) drawStatusBar() {
 			if tab.Dirty {
 				dirty = " · ●"
 			}
-			left = fmt.Sprintf(" %s · Ln %d, Col %d · %d lines%s",
-				lang, tab.Cursor.Line+1, tab.Cursor.Col+1, tab.Buffer.LineCount(), dirty)
+			left = fmt.Sprintf(" %s · Ln %d, Col %d · %d lines%s%s",
+				lang, tab.Cursor.Line+1, tab.Cursor.Col+1, tab.Buffer.LineCount(), dirty,
+				a.diagStatusSuffix())
 		}
 	} else {
 		left = " " + filepath.Base(a.rootDir)

@@ -58,6 +58,10 @@ func newTestApp(t *testing.T, root string) *App {
 	}
 	a.setActiveFolder(tree.Root.Path)
 	a.width, a.height = scr.Size()
+	// Kill the LSP integration for tests: openFile would otherwise
+	// spawn a real gopls on any machine that has one installed. Tests
+	// that exercise LSP inject a fake connection and flip this back.
+	a.lsp.dead = true
 	return a
 }
 
@@ -1606,7 +1610,7 @@ func TestDrawStatusBar_OmitsBranchWhenEmpty(t *testing.T) {
 }
 
 // TestMenuLayout_NoCustomActions pins down the baseline geometry: with
-// zero custom actions the modal still has seven built-in groups and the
+// zero custom actions the modal still has nine built-in groups and the
 // height matches the expected layout total. Catches accidental
 // off-by-one regressions when someone tweaks the layout helper.
 func TestMenuLayout_NoCustomActions(t *testing.T) {
@@ -1614,13 +1618,13 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 35 {
-		t.Errorf("modalHeight = %d, want 35", h)
+	if h != 39 {
+		t.Errorf("modalHeight = %d, want 39", h)
 	}
-	if got := len(items); got != 24 {
-		t.Errorf("item count = %d, want 24 built-ins", got)
+	if got := len(items); got != 27 {
+		t.Errorf("item count = %d, want 27 built-ins", got)
 	}
-	wantDiv := []int{2, 6, 10, 14, 17, 25, 30, 32}
+	wantDiv := []int{2, 6, 10, 14, 17, 21, 29, 34, 36}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1679,8 +1683,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 38 { // 35 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 38", h)
+	if h != 42 { // 39 + 2 items + 1 divider
+		t.Errorf("modalHeight = %d, want 42", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.

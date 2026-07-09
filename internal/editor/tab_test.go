@@ -996,3 +996,81 @@ func TestTab_Render_NoOverflowIndicator_WhenLineFits(t *testing.T) {
 		}
 	}
 }
+
+// TestTab_EditRev_BumpsOnContentMutations pins the contract the LSP
+// didChange debounce relies on: every path that changes the document
+// text moves EditRev, and pure cursor motion does not.
+func TestTab_EditRev_BumpsOnContentMutations(t *testing.T) {
+	tab, _ := NewTab("")
+	tab.Buffer = NewBuffer("hello world\nsecond line")
+
+	rev := tab.EditRev
+	step := func(name string, mutate func()) {
+		t.Helper()
+		mutate()
+		if tab.EditRev <= rev {
+			t.Errorf("%s did not bump EditRev (still %d)", name, tab.EditRev)
+		}
+		rev = tab.EditRev
+	}
+
+	step("InsertRune", func() { tab.InsertRune('x') })
+	step("InsertString", func() { tab.InsertString("ab") })
+	step("Backspace", func() { tab.Backspace() })
+	step("Delete", func() { tab.MoveCursorTo(Position{}, false); tab.Delete() })
+	step("Undo", func() {
+		if !tab.Undo() {
+			t.Fatal("expected undo history")
+		}
+	})
+	step("DeleteSelection", func() {
+		tab.Anchor = Position{Line: 0, Col: 0}
+		tab.Cursor = Position{Line: 0, Col: 2}
+		tab.DeleteSelection()
+	})
+
+	// Negative control: motion and selection changes leave EditRev alone.
+	before := tab.EditRev
+	tab.MoveCursor(1, 0, false)
+	tab.MoveLineEnd(true)
+	tab.SelectAll()
+	if tab.EditRev != before {
+		t.Errorf("cursor motion bumped EditRev %d → %d", before, tab.EditRev)
+	}
+}
+
+// TestTab_CursorScreenCell pins the caret-anchoring math the hover
+// popup uses: on-screen cursors resolve to the same cell Render's
+// hardware cursor lands on; scrolled-away cursors report ok=false.
+func TestTab_CursorScreenCell(t *testing.T) {
+	tab, _ := NewTab("")
+	tab.Buffer = NewBuffer("zero\none\ntwo\nthree\nfour\nfive\nsix")
+
+	tab.Cursor = Position{Line: 2, Col: 3}
+	dx, dy, ok := tab.CursorScreenCell(40, 5)
+	if !ok {
+		t.Fatal("cursor inside the viewport should resolve")
+	}
+	// Content starts after the 6-cell gutter + 1-cell mark column.
+	if dx != gutterWidth+1+3 || dy != 2 {
+		t.Errorf("cell = (%d,%d), want (%d,2)", dx, dy, gutterWidth+1+3)
+	}
+
+	// Scroll the cursor's line above the viewport → not visible.
+	tab.ScrollY = 5
+	if _, _, ok := tab.CursorScreenCell(40, 5); ok {
+		t.Error("cursor above the viewport should report ok=false")
+	}
+
+	// Horizontal scroll pushing the caret off the left edge. The line
+	// must extend past ScrollX — on a shorter line the visual-column
+	// clamp parks the caret at the content edge instead (same rule
+	// Render's hardware cursor follows).
+	tab.Buffer = NewBuffer("this line is comfortably longer than the scroll offset")
+	tab.Cursor = Position{Line: 0, Col: 3}
+	tab.ScrollY = 0
+	tab.ScrollX = 10
+	if _, _, ok := tab.CursorScreenCell(40, 5); ok {
+		t.Error("cursor left of the h-scroll window should report ok=false")
+	}
+}

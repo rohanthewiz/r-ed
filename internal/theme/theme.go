@@ -49,6 +49,15 @@ type Theme struct {
 	GitModified tcell.Color
 	GitDeleted  tcell.Color
 
+	// LSP diagnostics — underline tint + gutter mark per severity.
+	// Errors reuse the red family, warnings amber, info/hint the calm
+	// blue, so severity reads at a glance without a legend. DiagError
+	// is separate from Error (the UI-failure color) so the two can be
+	// tuned independently even though they start out close.
+	DiagError   tcell.Color
+	DiagWarning tcell.Color
+	DiagInfo    tcell.Color
+
 	// --- File tree ---
 	FolderColor tcell.Color
 	FileColor   tcell.Color
@@ -99,6 +108,11 @@ func Default() Theme {
 		GitAdded:    tcell.NewRGBColor(0x9e, 0xce, 0x6a),
 		GitModified: tcell.NewRGBColor(0x7a, 0xa2, 0xf7),
 		GitDeleted:  tcell.NewRGBColor(0xf7, 0x76, 0x8e),
+
+		// Diagnostics — Tokyo Night red / amber / cyan-blue.
+		DiagError:   tcell.NewRGBColor(0xf7, 0x76, 0x8e),
+		DiagWarning: tcell.NewRGBColor(0xe0, 0xaf, 0x68),
+		DiagInfo:    tcell.NewRGBColor(0x7a, 0xa2, 0xf7),
 
 		// Tree.
 		FolderColor: tcell.NewRGBColor(0x7a, 0xa2, 0xf7),

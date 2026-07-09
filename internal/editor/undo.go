@@ -86,6 +86,7 @@ func (t *Tab) applySnapshot(s snapshot) {
 	t.Anchor = s.Anchor
 	t.cursorMoved = true
 	t.StyleStale = true
+	t.EditRev++
 }
 
 // initUndo seeds the original-state snapshot used by RevertFile. Called

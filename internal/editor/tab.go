@@ -93,6 +93,15 @@ type Tab struct {
 	// the built-in selection/find sources. See decoration.go for the
 	// span model and merge precedence.
 	DecoSources []DecorationSource
+
+	// EditRev counts content mutations — every path that changes what
+	// the buffer says (typing, deletes, undo, comment toggle, reload)
+	// bumps it. Consumers that need "did the text change since I last
+	// looked?" (the LSP didChange debounce) compare against a remembered
+	// value instead of diffing the buffer. Deliberately NOT bumped by
+	// cursor/selection movement or scrolling — those don't change the
+	// document a language server sees.
+	EditRev int
 }
 
 // NewTab opens path and returns a Tab. If the file does not exist, the tab
@@ -242,6 +251,7 @@ func (t *Tab) Reload() error {
 	t.Mtime = info.ModTime()
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 	// Reload re-establishes "what's on disk" as the new baseline. Any
 	// prior undo history is meaningless now (the line indices may have
 	// shifted, and the user explicitly asked to take the disk version),
@@ -281,6 +291,7 @@ func (t *Tab) DeleteSelection() {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 }
 
 // InsertString inserts s at the cursor (replacing any selection first) and
@@ -304,6 +315,7 @@ func (t *Tab) InsertString(s string) {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 }
 
 // InsertRune inserts a single typed character at the cursor. Coalesces
@@ -326,6 +338,7 @@ func (t *Tab) InsertRune(r rune) {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 }
 
 // Backspace deletes the character before the cursor (or the selection if any).
@@ -355,6 +368,7 @@ func (t *Tab) Backspace() {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 }
 
 // Delete removes the character after the cursor (or the selection if any).
@@ -385,6 +399,7 @@ func (t *Tab) Delete() {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 }
 
 // MoveCursor shifts the cursor by (dLine, dCol). When extend is true the
@@ -683,6 +698,26 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 	} else {
 		scr.HideCursor()
 	}
+}
+
+// CursorScreenCell returns the cursor's cell offset within a w×h render
+// of this tab — the same math Render uses to place the hardware cursor.
+// ok=false when the cursor is currently scrolled out of view. Callers
+// (the hover popup) use it to anchor overlays to the caret without
+// duplicating the gutter/tab-stop arithmetic.
+func (t *Tab) CursorScreenCell(w, h int) (dx, dy int, ok bool) {
+	contentX := gutterWidth + 1
+	contentW := w - gutterWidth - 1
+	if contentW < 1 {
+		contentW = 1
+	}
+	dy = t.Cursor.Line - t.ScrollY
+	runes := t.Buffer.LineRunes(t.Cursor.Line)
+	dx = contentX + (LineVisualCol(runes, t.Cursor.Col) - LineVisualCol(runes, t.ScrollX))
+	if dy < 0 || dy >= h || dx < contentX || dx >= contentX+contentW {
+		return 0, 0, false
+	}
+	return dx, dy, true
 }
 
 // HitTest converts screen coordinates within this tab's render area to a

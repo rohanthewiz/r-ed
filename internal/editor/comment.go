@@ -127,6 +127,7 @@ func (t *Tab) ToggleLineComment() (changed bool, ok bool) {
 	t.Dirty = true
 	t.StyleStale = true
 	t.cursorMoved = true
+	t.EditRev++
 	return true, true
 }
 

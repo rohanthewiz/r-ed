@@ -108,4 +108,13 @@ keeps its `_test.go` sibling.
       open/save/10s-tick → gutter marks via gitDiffSource; Next/Previous
       change in the ≡ Git group + Esc-h / Esc-H leaders. Stage / commit /
       branch-switch palette commands remain future work as planned)
-- [ ] Phase 5 — LSP
+- [x] Phase 5 — LSP (done 2026-07-09; `internal/lsp` — hand-rolled
+      JSON-RPC/stdio client, stdlib only, with UTF-16↔rune and
+      URI↔path conversion; `internal/app/lsp.go` — async gopls
+      lifecycle, `Tab.EditRev`-driven 300ms-debounced full-text sync,
+      diagnostics → decoration layer (underline spans + gutter dots)
+      + status-bar ✗/⚠/ℹ counts, go-to-definition with back-nav
+      stack, hover → near-cursor popup (`hovermodal.go`). ≡ Code
+      group + Esc-d / Esc-i / Esc-o leaders. Missing gopls degrades
+      silently; e2e tests run against real gopls when installed,
+      skip otherwise)
