@@ -10,6 +10,7 @@ package userconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -170,5 +171,107 @@ func TestDefaultPathFallsBackToHome(t *testing.T) {
 	want := filepath.Join("/tmp/home-test", ".config", "r-ed", "config.json")
 	if got != want {
 		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultsAutoSaveOn pins the documented auto-save default: on.
+// Flipping this silently would change save semantics for every user
+// with no config file, so it gets its own guard.
+func TestDefaultsAutoSaveOn(t *testing.T) {
+	if !Defaults().AutoSave {
+		t.Fatal("Defaults().AutoSave = false, want true")
+	}
+}
+
+// TestLoadAutoSaveValues exercises the recognised autosave values and
+// the absent-field default, mirroring the icons table test.
+func TestLoadAutoSaveValues(t *testing.T) {
+	cases := map[string]bool{
+		`{"autosave":"on"}`:    true,
+		`{"autosave":"off"}`:   false,
+		`{"autosave":" OFF "}`: false, // case/whitespace tolerant, like icons
+		`{}`:                   true,  // omitted field keeps the default
+	}
+	dir := t.TempDir()
+	for body, want := range cases {
+		p := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if cfg.AutoSave != want {
+			t.Errorf("Load(%s).AutoSave = %v, want %v", body, cfg.AutoSave, want)
+		}
+	}
+}
+
+// TestLoadAutoSaveInvalid mirrors the icons rule: a typo'd value is
+// an error the caller can flash, not a silent fallback that hides the
+// user's mistake.
+func TestLoadAutoSaveInvalid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"autosave":"maybe"}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("invalid autosave value should error")
+	}
+}
+
+// TestSaveAutoSave_CreatesFile covers the fresh-install path: no
+// config file (or even config dir) exists yet, and persisting the
+// toggle must create both.
+func TestSaveAutoSave_CreatesFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nested", "config.json")
+	if err := SaveAutoSave(p, false); err != nil {
+		t.Fatalf("SaveAutoSave: %v", err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.AutoSave {
+		t.Fatal("persisted off, loaded on")
+	}
+}
+
+// TestSaveAutoSave_PreservesUnknownKeys is the forward-compat
+// contract: the read-modify-write must round-trip keys this version
+// of the binary doesn't know about, so toggling auto-save from an
+// old r-ed can't strip settings written by a newer one.
+func TestSaveAutoSave_PreservesUnknownKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	seed := `{"icons":"on","future_setting":{"nested":true}}`
+	if err := os.WriteFile(p, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveAutoSave(p, true); err != nil {
+		t.Fatalf("SaveAutoSave: %v", err)
+	}
+	data, _ := os.ReadFile(p)
+	for _, want := range []string{`"icons"`, `"future_setting"`, `"nested"`, `"autosave"`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("rewritten config lost %s: %s", want, data)
+		}
+	}
+}
+
+// TestSaveAutoSave_RefusesMalformedConfig pins the do-no-harm rule: a
+// config the user hand-broke must be left alone, not replaced with a
+// minimal file that eats their (fixable) settings.
+func TestSaveAutoSave_RefusesMalformedConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{not json`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveAutoSave(p, true); err == nil {
+		t.Fatal("malformed config should refuse the write")
+	}
+	data, _ := os.ReadFile(p)
+	if string(data) != `{not json` {
+		t.Fatalf("malformed config was modified: %q", data)
 	}
 }

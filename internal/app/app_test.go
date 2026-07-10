@@ -27,6 +27,7 @@ import (
 	"github.com/rohanthewiz/r-ed/internal/customactions"
 	"github.com/rohanthewiz/r-ed/internal/editor"
 	"github.com/rohanthewiz/r-ed/internal/filetree"
+	"github.com/rohanthewiz/r-ed/internal/format"
 	"github.com/rohanthewiz/r-ed/internal/icons"
 	"github.com/rohanthewiz/r-ed/internal/theme"
 )
@@ -62,6 +63,13 @@ func newTestApp(t *testing.T, root string) *App {
 	// spawn a real gopls on any machine that has one installed. Tests
 	// that exercise LSP inject a fake connection and flip this back.
 	a.lsp.dead = true
+	// Stub out the builtin Go formatter for the same reason: saving a
+	// .go fixture must not shell out to whatever goimports/gofmt the
+	// machine running the tests has on PATH. Tests that exercise the
+	// builtin path swap in their own stub; the cleanup restores the
+	// real resolver either way.
+	builtinCommandFor = func(string) []string { return nil }
+	t.Cleanup(func() { builtinCommandFor = format.BuiltinCommandFor })
 	return a
 }
 
@@ -1626,13 +1634,13 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 46 {
-		t.Errorf("modalHeight = %d, want 46", h)
+	if h != 47 {
+		t.Errorf("modalHeight = %d, want 47", h)
 	}
-	if got := len(items); got != 34 {
-		t.Errorf("item count = %d, want 34 built-ins", got)
+	if got := len(items); got != 35 {
+		t.Errorf("item count = %d, want 35 built-ins", got)
 	}
-	wantDiv := []int{2, 6, 10, 14, 24, 28, 36, 41, 43}
+	wantDiv := []int{2, 7, 11, 15, 25, 29, 37, 42, 44}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1691,8 +1699,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 49 { // 46 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 49", h)
+	if h != 50 { // 47 + 2 items + 1 divider
+		t.Errorf("modalHeight = %d, want 50", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.

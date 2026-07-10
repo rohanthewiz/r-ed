@@ -47,9 +47,12 @@ internal/editor/highlight.go  Chroma → []tcell.Style per line
 internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Render
 internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib only)
 internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
+internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
+internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
+internal/format/              format.json load, trust store, builtin goimports/gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
-internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader (icons mode)
+internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader/writer (icons, autosave)
 internal/icons/icons.go       Nerd Font detection + per-file glyph mapping
 internal/theme/theme.go       Tokyo Night palette + syntax color mapping
 internal/version/version.go   const Version = "x.y.z" — single line, CI bumps it
@@ -162,6 +165,26 @@ framework dependency. House rules it must keep obeying:
 - Leaders: Esc-d definition, Esc-i hover, Esc-o jump back.
 - Tests kill the integration (`a.lsp.dead = true` in newTestApp) so
   openFile can't spawn a real gopls; LSP tests inject `fakeLSPConn`.
+
+### Format-on-save precedence + builtin Go pass (app/format.go)
+`runFormatOnSave(idx, quiet)` routes: project `format.json` entry
+(trust-gated) → builtin Go goimports/gofmt (`format.BuiltinCommandFor`,
+NO trust prompt — the argv is hardcoded, not repo-supplied) → global-
+defaults install offer. `quiet=true` (auto-save) never opens a modal
+and never flashes; an untrusted config is silently skipped until the
+next explicit Save. Tests stub the app-level `builtinCommandFor` var
+(newTestApp sets it nil) so saves never exec the dev machine's Go
+tools — keep that in place.
+
+### Auto-save (app/autosave.go)
+Debounce mirrors the LSP didChange pattern: `autoSaveAfterEvent` runs
+after every dispatch, compares the sum of all tabs' EditRevs, and
+(re)arms a 2s `time.AfterFunc` that posts `autoSaveEvent`. Saves are
+silent (no flash), run format-on-save in quiet mode, defer while any
+modal/menu is open, and skip tabs whose disk file changed after load
+(explicit Save remains the overwrite path). The ≡ toggle persists via
+`userconfig.SaveAutoSave`, which round-trips unknown JSON keys — don't
+replace that with a struct marshal. Default is ON.
 
 ### Three-way external-change reconciliation (app.go)
 On each tree-refresh tick, `reconcileOpenTabsWithDisk` checks each open

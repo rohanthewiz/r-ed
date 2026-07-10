@@ -8,6 +8,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,20 +101,22 @@ func openTabAtPath(t *testing.T, a *App, path string) *editor.Tab {
 	return tab
 }
 
-// TestRunFormatOnSave_NoConfigIsNoop pins the central opt-in promise:
-// without a .r-ed/format.json, save behaves exactly like before
-// — no exec, no prompt, no flash about formatting.
+// TestRunFormatOnSave_NoConfigIsNoop pins the opt-in promise for
+// everything that isn't Go: without a .r-ed/format.json, save
+// behaves exactly like before — no exec, no prompt, no flash about
+// formatting. (Go files are the deliberate exception — they get the
+// builtin goimports/gofmt pass, covered by the builtin tests below.)
 func TestRunFormatOnSave_NoConfigIsNoop(t *testing.T) {
 	useTestTrustFile(t)
 	root := t.TempDir()
 	a := newTestApp(t, root)
-	target := filepath.Join(root, "main.go")
-	if err := os.WriteFile(target, []byte("package main\n"), 0644); err != nil {
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("hello\n"), 0644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) != nil {
 		t.Fatal("no config should never open a confirm modal")
@@ -134,7 +137,7 @@ func TestRunFormatOnSave_UnknownExtensionIsNoop(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) != nil {
 		t.Fatal("unknown extension should not prompt")
@@ -156,7 +159,7 @@ func TestRunFormatOnSave_UnknownTrustOpensPrompt(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) == nil {
 		t.Fatal("untrusted config should open the trust prompt")
@@ -182,7 +185,7 @@ func TestRunFormatOnSave_DeniedIsNoop(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) != nil {
 		t.Fatal("denied trust should not re-prompt")
@@ -207,7 +210,7 @@ func TestTrustPromptCancel_PersistsDeny(t *testing.T) {
 	openTabAtPath(t, a, target)
 
 	// Run the save flow up to the prompt, then drive cancel directly.
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 	if confirmOf(a) == nil {
 		t.Fatal("expected trust prompt to be open")
 	}
@@ -247,7 +250,7 @@ func TestExecFormatter_RunsAndPostsEvent(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	a.execFormatter(target, []string{"sh", "-c", "echo formatted > " + target})
+	a.execFormatter(target, []string{"sh", "-c", "echo formatted > " + target}, false)
 
 	ev := waitForFormatEvent(t, a)
 	if ev.err != nil {
@@ -269,7 +272,7 @@ func TestExecFormatter_RunsAndPostsEvent(t *testing.T) {
 func TestExecFormatter_MissingBinaryIsSilent(t *testing.T) {
 	useTestTrustFile(t)
 	a := newTestApp(t, t.TempDir())
-	a.execFormatter("/tmp/nope.go", []string{"definitely-not-a-real-binary-xyzzy"})
+	a.execFormatter("/tmp/nope.go", []string{"definitely-not-a-real-binary-xyzzy"}, false)
 
 	ev := waitForFormatEvent(t, a)
 	if ev.err != nil {
@@ -355,7 +358,7 @@ func TestMaybeOfferInstall_NoDefaultsIsNoop(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) != nil {
 		t.Fatal("missing defaults should never prompt")
@@ -376,7 +379,7 @@ func TestMaybeOfferInstall_OpensPrompt(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	if confirmOf(a) == nil {
 		t.Fatal("expected install prompt to open")
@@ -406,7 +409,7 @@ func TestMaybeOfferInstall_AcceptWritesProjectConfig(t *testing.T) {
 	a := newTestApp(t, root)
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 	if confirmOf(a) == nil {
 		t.Fatal("expected install prompt to open")
 	}
@@ -488,7 +491,7 @@ func TestMaybeOfferInstall_DeclinePersists(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 	if confirmOf(a) == nil {
 		t.Fatal("expected install prompt to open")
 	}
@@ -503,7 +506,7 @@ func TestMaybeOfferInstall_DeclinePersists(t *testing.T) {
 	}
 
 	// Next save should be silent.
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 	if confirmOf(a) != nil {
 		t.Fatal("declined extension should not re-prompt")
 	}
@@ -524,7 +527,7 @@ func TestMaybeOfferInstall_ProjectHasEntryUsesTrustPath(t *testing.T) {
 	}
 	openTabAtPath(t, a, target)
 
-	a.runFormatOnSave(0)
+	a.runFormatOnSave(0, false)
 
 	// The trust prompt is open — not the install prompt — and its
 	// hook is set. We can't trivially distinguish the two by struct
@@ -558,4 +561,173 @@ func waitForFormatEvent(t *testing.T, a *App) *formatDoneEvent {
 	}
 	t.Fatal("timed out waiting for formatDoneEvent")
 	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Builtin Go formatting + quiet (auto-save) mode
+// -----------------------------------------------------------------------------
+
+// stubBuiltinFormatter swaps the app-level builtin resolver for one
+// that returns argv for .go files and counts how often it was
+// consulted. newTestApp already installed a nil stub + cleanup, so
+// this just layers the test's own behaviour on top.
+func stubBuiltinFormatter(t *testing.T, argv []string) *int {
+	t.Helper()
+	calls := 0
+	builtinCommandFor = func(path string) []string {
+		calls++
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		return argv
+	}
+	return &calls
+}
+
+// TestRunFormatOnSave_BuiltinRunsForGo pins the headline behaviour:
+// a Go file in a project with no format.json still gets formatted,
+// with no trust prompt — the argv is ours, not the repo's.
+func TestRunFormatOnSave_BuiltinRunsForGo(t *testing.T) {
+	useTestTrustFile(t)
+	root := t.TempDir()
+	a := newTestApp(t, root)
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	openTabAtPath(t, a, target)
+	calls := stubBuiltinFormatter(t, []string{"sh", "-c", "echo formatted > " + target})
+
+	a.runFormatOnSave(0, false)
+
+	if *calls == 0 {
+		t.Fatal("builtin resolver was never consulted")
+	}
+	if confirmOf(a) != nil {
+		t.Fatal("builtin formatting must not open a trust prompt")
+	}
+	if ev := waitForFormatEvent(t, a); ev.err != nil {
+		t.Fatalf("builtin run err: %v", ev.err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "formatted\n" {
+		t.Fatalf("file contents: got %q, want %q", string(got), "formatted\n")
+	}
+}
+
+// TestRunFormatOnSave_ProjectEntryOverridesBuiltin pins the
+// precedence contract: when format.json has a "go" entry, the
+// project's choice drives (including its trust prompt) and the
+// builtin is never consulted.
+func TestRunFormatOnSave_ProjectEntryOverridesBuiltin(t *testing.T) {
+	useTestTrustFile(t)
+	root := t.TempDir()
+	writeFormatConfig(t, root, `{"commands":{"go":["echo","ran","$FILE"]}}`)
+	a := newTestApp(t, root)
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	openTabAtPath(t, a, target)
+	calls := stubBuiltinFormatter(t, []string{"echo"})
+
+	a.runFormatOnSave(0, false)
+
+	if *calls != 0 {
+		t.Fatal("builtin must not be consulted when the project config has a go entry")
+	}
+	if confirmOf(a) == nil {
+		t.Fatal("project entry should still drive the trust prompt")
+	}
+}
+
+// TestRunFormatOnSave_QuietSkipsTrustPrompt is the auto-save half of
+// the trust model: an un-trusted config encountered during a quiet
+// (auto-save) run is skipped silently — a modal must never pop while
+// the user is mid-thought. The next explicit Save will prompt.
+func TestRunFormatOnSave_QuietSkipsTrustPrompt(t *testing.T) {
+	useTestTrustFile(t)
+	root := t.TempDir()
+	writeFormatConfig(t, root, `{"commands":{"go":["echo","ran","$FILE"]}}`)
+	a := newTestApp(t, root)
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	openTabAtPath(t, a, target)
+
+	a.runFormatOnSave(0, true)
+
+	if confirmOf(a) != nil {
+		t.Fatal("quiet run must not open the trust prompt")
+	}
+}
+
+// TestRunFormatOnSave_QuietSkipsInstallOffer mirrors the trust-prompt
+// rule for the other modal this pipeline can open: global defaults
+// that would normally trigger an install offer stay silent during an
+// auto-save.
+func TestRunFormatOnSave_QuietSkipsInstallOffer(t *testing.T) {
+	useTestTrustFile(t)
+	useTestDefaultsFile(t, `{"commands":{"txt":["fmt-txt","$FILE"]}}`)
+	root := t.TempDir()
+	a := newTestApp(t, root)
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	openTabAtPath(t, a, target)
+
+	a.runFormatOnSave(0, true)
+
+	if confirmOf(a) != nil {
+		t.Fatal("quiet run must not open the install offer")
+	}
+}
+
+// TestHandleFormatDone_QuietErrorIsSilent pins the no-spam rule:
+// goimports rejecting half-written code during an auto-save cycle
+// must not flash the status bar every idle pause.
+func TestHandleFormatDone_QuietErrorIsSilent(t *testing.T) {
+	useTestTrustFile(t)
+	a := newTestApp(t, t.TempDir())
+	a.statusMsg = ""
+
+	a.handleFormatDone(&formatDoneEvent{
+		tabPath: "/tmp/x.go", label: "goimports",
+		err: fmt.Errorf("syntax error"), quiet: true,
+	})
+
+	if a.statusMsg != "" {
+		t.Fatalf("quiet failure flashed %q, want silence", a.statusMsg)
+	}
+}
+
+// TestHandleFormatDone_QuietStillReloads confirms quiet mode only
+// mutes the messaging — a clean buffer still picks up the formatted
+// file, otherwise auto-save formatting would leave the editor showing
+// stale text.
+func TestHandleFormatDone_QuietStillReloads(t *testing.T) {
+	useTestTrustFile(t)
+	root := t.TempDir()
+	a := newTestApp(t, root)
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("first\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tab := openTabAtPath(t, a, target)
+	tab.Dirty = false
+	if err := os.WriteFile(target, []byte("formatted\n"), 0644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	a.statusMsg = ""
+
+	a.handleFormatDone(&formatDoneEvent{tabPath: target, label: "goimports", quiet: true})
+
+	if got := tab.Buffer.String(); got != "formatted\n" {
+		t.Fatalf("buffer after quiet reload: got %q, want %q", got, "formatted\n")
+	}
+	if a.statusMsg != "" {
+		t.Fatalf("quiet success flashed %q, want silence", a.statusMsg)
+	}
 }

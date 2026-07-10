@@ -11,13 +11,15 @@
 // is editor preferences. Keeping them apart means a malformed actions
 // file can't break editor settings and vice-versa.
 //
-// Schema today is intentionally tiny — one key — but the loader is
-// already wrapped in a struct so we can grow new top-level fields
-// without breaking older configs:
+// Schema today is intentionally tiny, but the loader is wrapped in a
+// struct so we can grow new top-level fields without breaking older
+// configs:
 //
 //	{"icons": "auto"}    // default; auto-detect Nerd Fonts on startup
 //	{"icons": "on"}      // force-on, even if detection would say no
 //	{"icons": "off"}     // force-off, even if a Nerd Font is installed
+//	{"autosave": "on"}   // default; save dirty buffers after an idle pause
+//	{"autosave": "off"}  // only explicit ≡ → Save writes to disk
 //
 // The loader is best-effort the same way customactions is: missing
 // file → defaults, malformed file → error returned for the app to
@@ -49,20 +51,30 @@ const (
 // any field the file omitted, so consumers never need to nil-check.
 type Config struct {
 	Icons IconsMode
+
+	// AutoSave controls whether dirty buffers are written to disk
+	// automatically after an idle pause. Defaults to on — the editor
+	// is opinionated toward "your work is always on disk", and the
+	// ≡ menu toggle (which persists here) is the escape hatch.
+	AutoSave bool
 }
 
 // Defaults returns a Config populated with the values used when no
 // config file is present (or every field in it is blank). Centralised
 // so tests and the loader can't drift from each other.
 func Defaults() Config {
-	return Config{Icons: IconsAuto}
+	return Config{Icons: IconsAuto, AutoSave: true}
 }
 
 // fileFormat mirrors the on-disk JSON shape. We decode into this and
 // then promote into Config so the public type doesn't have to carry
 // JSON tags or pointer fields just for "field was absent" detection.
+// AutoSave is a string ("on"/"off"), not a bool, for the same absent-
+// field reason: a missing key must mean "keep the default", and JSON
+// false is indistinguishable from absent on a plain bool.
 type fileFormat struct {
-	Icons string `json:"icons,omitempty"`
+	Icons    string `json:"icons,omitempty"`
+	AutoSave string `json:"autosave,omitempty"`
 }
 
 // DefaultPath returns the canonical config-file location:
@@ -129,5 +141,65 @@ func Load(path string) (Config, error) {
 			path, IconsAuto, IconsOn, IconsOff, ff.Icons,
 		)
 	}
+
+	switch strings.ToLower(strings.TrimSpace(ff.AutoSave)) {
+	case "":
+		// field omitted — keep default
+	case "on":
+		cfg.AutoSave = true
+	case "off":
+		cfg.AutoSave = false
+	default:
+		return Defaults(), fmt.Errorf(
+			"%s: autosave must be \"on\" or \"off\" (got %q)",
+			path, ff.AutoSave,
+		)
+	}
 	return cfg, nil
+}
+
+// SaveAutoSave persists the auto-save preference into the config file
+// at path, preserving every other key the user may have set by hand
+// (icons today, anything we add tomorrow). The read-modify-write goes
+// through a raw map — not fileFormat — so keys this binary doesn't
+// know about survive a round-trip with a newer or older r-ed.
+// Writes atomically (temp + rename), same as the format-config
+// installer, so a crash mid-write can't corrupt the config.
+func SaveAutoSave(path string, on bool) error {
+	if path == "" {
+		return errors.New("no config directory resolved — cannot persist auto-save preference")
+	}
+	raw := map[string]any{}
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil && len(data) > 0:
+		if err := json.Unmarshal(data, &raw); err != nil {
+			// A malformed config is the user's hand-edit; overwriting
+			// it with just {"autosave": …} would eat their file.
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	val := "on"
+	if !on {
+		val = "off"
+	}
+	raw["autosave"] = val
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

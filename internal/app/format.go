@@ -7,17 +7,24 @@
 
 package app
 
-// Format-on-save wiring. The pure logic (config parsing, trust file)
-// lives in internal/format; this file is the bridge into the editor's
-// event loop and modals. The flow on every successful save:
+// Format-on-save wiring. The pure logic (config parsing, trust file,
+// builtin Go tooling) lives in internal/format; this file is the
+// bridge into the editor's event loop and modals. The flow on every
+// successful save:
 //
-//  1. Load <root>/.r-ed/format.json. Missing → done.
-//  2. Look up an argv for the file's extension. None → done.
-//  3. Check the trust store. Allowed → run; Denied → done; Unknown
+//  1. Load <root>/.r-ed/format.json. Entry for this extension →
+//     check the trust store: Allowed → run; Denied → done; Unknown
 //     → open the trust prompt and re-enter the run on Allow.
+//  2. No project entry + the file is Go → run the built-in
+//     goimports/gofmt pass (no trust gate — the argv is ours, not
+//     the repo's).
+//  3. Otherwise offer to install a matching global default, if any.
 //  4. exec.Command in a goroutine; post a formatDoneEvent on
 //     completion so the main loop can reload the buffer (when the
 //     user hasn't typed in the meantime) and flash a status.
+//
+// Auto-save reuses the same pipeline in quiet mode: no prompts, no
+// flashes, skip-if-untrusted. See autosave.go for why.
 //
 // Keeping everything except the goroutine on the main loop means the
 // usual rule still holds: tcell state is mutated only from the event
@@ -44,25 +51,48 @@ type formatDoneEvent struct {
 	tabPath string
 	label   string // command name (just argv[0]) for status messages
 	err     error
+	// quiet marks a run triggered by auto-save rather than an explicit
+	// Save. Quiet runs still reload the buffer on success but never
+	// flash — auto-save fires every idle pause, and goimports failing
+	// on mid-thought code would otherwise spam the status bar.
+	quiet bool
 }
 
 // When satisfies the tcell.Event interface.
 func (e *formatDoneEvent) When() time.Time { return e.when }
 
-// runFormatOnSave is called by saveTabAt after a successful disk
-// write. It branches three ways:
+// builtinCommandFor resolves the built-in Go formatter (goimports,
+// falling back to gofmt). A package var so tests can stub it to nil —
+// otherwise every test that saves a .go fixture would shell out to
+// whatever Go tools the dev machine has on PATH, the same reason
+// newTestApp kills the LSP integration.
+var builtinCommandFor = format.BuiltinCommandFor
+
+// runFormatOnSave is called after a successful disk write — by
+// saveTabAt for explicit saves (quiet=false) and by autoSaveTab for
+// idle auto-saves (quiet=true). It branches four ways:
 //
 //   - Project format.json has an entry for this extension → trust
 //     check, prompt if needed, then run.
-//   - Project has no entry but global format-defaults.json does →
-//     offer to install the global preference into the project.
-//   - Neither → silent no-op (the spec).
+//   - No project entry but the file is Go and goimports/gofmt is
+//     installed → run the built-in formatter. No trust prompt: the
+//     argv is hardcoded in the binary, not supplied by the repo, so
+//     there's nothing for the user to vet.
+//   - No project entry, not (formattable) Go, but the user's global
+//     format-defaults.json covers the extension → offer to install
+//     the preference into the project.
+//   - Nothing matches → silent no-op (the spec).
+//
+// Quiet mode never opens a modal and never flashes: an auto-save runs
+// while the user is mid-thought, so an un-trusted config is silently
+// skipped (the next explicit Save will prompt) and load errors wait
+// for an explicit Save to be surfaced.
 //
 // Each branch is its own helper so the routing logic stays shallow
 // and easy to follow. Errors loading config files are surfaced once
 // (so a typo isn't silently ignored) but never block the save itself
 // — that already happened before this function was called.
-func (a *App) runFormatOnSave(idx int) {
+func (a *App) runFormatOnSave(idx int, quiet bool) {
 	if idx < 0 || idx >= len(a.tabs) {
 		return
 	}
@@ -73,40 +103,60 @@ func (a *App) runFormatOnSave(idx int) {
 
 	cfg, err := format.Load(a.rootDir)
 	if err != nil {
-		a.flash("format: " + err.Error())
+		if !quiet {
+			a.flash("format: " + err.Error())
+		}
 		return
 	}
 
 	argv := cfg.CommandFor(tab.Path)
 	if argv != nil {
-		a.runWithTrust(idx, cfg, argv)
+		a.runWithTrust(idx, cfg, argv, quiet)
+		return
+	}
+
+	// Built-in Go formatting sits between the project config (which
+	// overrides it) and the install offer (which it makes redundant
+	// for Go — offering to install a gofmt default when the builtin
+	// already runs one would be a nag with no upside).
+	if builtin := builtinCommandFor(tab.Path); builtin != nil {
+		a.execFormatter(tab.Path, builtin, quiet)
 		return
 	}
 
 	// Project doesn't format this extension. See if the user has a
-	// personal default we can offer to install.
-	a.maybeOfferInstall(idx, tab.Path)
+	// personal default we can offer to install — but never from an
+	// auto-save, which must stay prompt-free.
+	if !quiet {
+		a.maybeOfferInstall(idx, tab.Path)
+	}
 }
 
 // runWithTrust drives the existing trust-check + run path, factored
 // out so runFormatOnSave can stay a flat router. Behaviour matches
 // the previous monolithic version exactly — denied stays silent,
-// unknown opens the prompt, allowed runs.
-func (a *App) runWithTrust(idx int, cfg *format.Config, argv []string) {
+// unknown opens the prompt, allowed runs. In quiet mode an unknown
+// trust state is skipped instead of prompted: modals must never pop
+// while the user is typing, and the next explicit Save will ask.
+func (a *App) runWithTrust(idx int, cfg *format.Config, argv []string, quiet bool) {
 	tab := a.tabs[idx]
 	trust, err := format.LoadTrust(format.DefaultTrustPath())
 	if err != nil {
-		a.flash("format trust: " + err.Error())
+		if !quiet {
+			a.flash("format trust: " + err.Error())
+		}
 		return
 	}
 	switch trust.CheckTrust(a.rootDir, cfg.Hash()) {
 	case format.TrustDenied:
 		return
 	case format.TrustUnknown:
-		a.openFormatTrustPrompt(idx, cfg, argv)
+		if !quiet {
+			a.openFormatTrustPrompt(idx, cfg, argv)
+		}
 		return
 	}
-	a.execFormatter(tab.Path, argv)
+	a.execFormatter(tab.Path, argv, quiet)
 }
 
 // maybeOfferInstall checks whether the user has a global default
@@ -186,9 +236,10 @@ func (a *App) openFormatTrustPrompt(idx int, cfg *format.Config, argv []string) 
 
 	msg := fmt.Sprintf("Allow %s to run formatters on save?", filepath.Join(format.ConfigDir, format.ConfigFile))
 	m := a.openConfirm("Trust this project's formatter?", msg, func(app *App) {
-		// Yes — record allow, persist, and run.
+		// Yes — record allow, persist, and run. The prompt only opens
+		// from an explicit Save, so the run is a loud one.
 		app.persistTrust(root, hash, true)
-		app.execFormatter(tabPath, argv)
+		app.execFormatter(tabPath, argv, false)
 	})
 	// Cancel/No path: persist a denial so we don't re-prompt every
 	// save. The hook lives on this confirm instance, so an unrelated
@@ -255,7 +306,7 @@ func (a *App) openFormatInstallPrompt(idx int, ext string, argvTemplate []string
 		// Substitute $FILE at run time, never at install time. This
 		// keeps the on-disk template portable while still pointing
 		// the formatter at the file the user just saved.
-		app.execFormatter(tabPath, substituteFile(argvTemplate, tabPath))
+		app.execFormatter(tabPath, substituteFile(argvTemplate, tabPath), false)
 	})
 	m.cancelHook = func(app *App) {
 		app.persistInstallDecline(root, ext, true)
@@ -311,19 +362,27 @@ func (a *App) persistTrust(root, hash string, trusted bool) {
 // execFormatter shells out to argv with the file path already
 // substituted in. Runs in a goroutine and posts a formatDoneEvent on
 // completion so the main loop can reload the buffer and flash a
-// status — exactly the same pattern runCustomAction uses.
+// status — exactly the same pattern runCustomAction uses. quiet runs
+// (auto-save) skip the "running…" flash and mark the done-event so
+// its handler stays silent too.
 //
 // We deliberately use exec.Command (not sh -c) with an explicit argv
 // so a shell-injection vector via a malicious format.json is just
 // not available: each arg is passed as-is to execve, no shell
 // interpretation, no globbing, no command chaining.
-func (a *App) execFormatter(tabPath string, argv []string) {
+func (a *App) execFormatter(tabPath string, argv []string, quiet bool) {
 	if len(argv) == 0 {
 		return
 	}
 	scr := a.screen
-	label := argv[0]
-	a.flash(label + "…")
+	// Base name only: the builtin path hands us a fully-resolved
+	// binary (/opt/…/goimports) and status flashes read better as
+	// just the tool name. Config-supplied bare names pass through
+	// unchanged.
+	label := filepath.Base(argv[0])
+	if !quiet {
+		a.flash(label + "…")
+	}
 	go func() {
 		cmd := exec.Command(argv[0], argv[1:]...)
 		out, err := cmd.CombinedOutput()
@@ -350,6 +409,7 @@ func (a *App) execFormatter(tabPath string, argv []string) {
 			tabPath: tabPath,
 			label:   label,
 			err:     err,
+			quiet:   quiet,
 		})
 	}()
 }
@@ -371,12 +431,20 @@ func indexNewline(s string) int {
 // shows the formatted output — but only if the user hasn't started
 // editing again in the meantime (Dirty=true). Trampling unsaved
 // edits would be the worst possible UX outcome of this feature.
+//
+// Quiet runs (auto-save) reload the same way but suppress the
+// routine flashes: an auto-save fires on every idle pause, and
+// goimports rejecting half-written code isn't news the user needs
+// every two seconds. The one exception is a reload failure — that's
+// rare, actionable breakage, so it's surfaced even when quiet.
 func (a *App) handleFormatDone(e *formatDoneEvent) {
 	if e == nil {
 		return
 	}
 	if e.err != nil {
-		a.flash(fmt.Sprintf("%s failed: %v", e.label, e.err))
+		if !e.quiet {
+			a.flash(fmt.Sprintf("%s failed: %v", e.label, e.err))
+		}
 		return
 	}
 	for _, tab := range a.tabs {
@@ -384,14 +452,18 @@ func (a *App) handleFormatDone(e *formatDoneEvent) {
 			continue
 		}
 		if tab.Dirty {
-			a.flash(fmt.Sprintf("%s ran — kept your edits (file on disk was reformatted)", e.label))
+			if !e.quiet {
+				a.flash(fmt.Sprintf("%s ran — kept your edits (file on disk was reformatted)", e.label))
+			}
 			return
 		}
 		if err := tab.Reload(); err != nil {
 			a.flash(fmt.Sprintf("%s ran but reload failed: %v", e.label, err))
 			return
 		}
-		a.flash(fmt.Sprintf("Formatted with %s", e.label))
+		if !e.quiet {
+			a.flash(fmt.Sprintf("Formatted with %s", e.label))
+		}
 		return
 	}
 	// Tab was closed before the formatter finished — silent no-op.

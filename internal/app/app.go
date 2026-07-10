@@ -177,6 +177,7 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Save", action: (*App).menuSave, enabled: (*App).hasSavableTab},
 			{label: "Save & close tab", action: (*App).menuSaveAndClose, enabled: (*App).hasSavableTab},
 			{label: "Close tab", action: (*App).menuClose, enabled: (*App).hasTab},
+			{action: (*App).menuToggleAutoSave, enabled: alwaysTrue, labelFor: (*App).autoSaveToggleLabel},
 		},
 		// History
 		{
@@ -381,6 +382,16 @@ type App struct {
 	// treeRefreshStop signals the background tree-refresh goroutine to exit.
 	treeRefreshStop chan struct{}
 
+	// Auto-save state. autoSaveEnabled mirrors the persisted user
+	// preference (≡ menu toggle, default on). autoSaveTimer is the
+	// pending idle countdown — armed/reset only from the main loop.
+	// autoSaveSig is the last-seen sum of every tab's EditRev, the
+	// cheap "did any buffer mutate since we last looked?" signature
+	// autoSaveAfterEvent compares against. See autosave.go.
+	autoSaveEnabled bool
+	autoSaveTimer   *time.Timer
+	autoSaveSig     int
+
 	// gitBranch is the current branch name for the project root (or a
 	// short commit SHA when HEAD is detached). Empty when the root isn't
 	// a git repo. Updated on the same 10-second tick as refreshGitStatus.
@@ -509,6 +520,7 @@ func (a *App) loadUserConfig() {
 	if a.tree != nil {
 		a.tree.IconsEnabled = icons.Resolve(cfg.Icons)
 	}
+	a.autoSaveEnabled = cfg.AutoSave
 }
 
 // refreshGitStatus re-runs `git status --porcelain` against the project
@@ -578,6 +590,7 @@ func (a *App) stopTreeRefresh() {
 func (a *App) Close() {
 	a.stopTreeRefresh()
 	a.stopAutoScroll()
+	a.stopAutoSave()
 	a.lspShutdown()
 	if a.screen != nil {
 		a.screen.Fini()
@@ -615,6 +628,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleMouse(e)
 	case *autoScrollEvent:
 		a.handleAutoScroll()
+	case *autoSaveEvent:
+		a.handleAutoSave()
 	case *treeRefreshEvent:
 		a.refreshTreeNow()
 	case *gitDiffEvent:
@@ -659,6 +674,9 @@ func (a *App) handleEvent(ev tcell.Event) {
 	// edits arrive through many paths (keys, paste, modals, reloads on
 	// the refresh tick) and this is a few integer compares when idle.
 	a.lspAfterEvent()
+	// Same trick for auto-save: any event that mutated a buffer
+	// re-arms the idle countdown. See autosave.go.
+	a.autoSaveAfterEvent()
 }
 
 // workspaceChanged re-syncs every subsystem that mirrors on-disk
@@ -1687,9 +1705,10 @@ func (a *App) saveTabAt(idx int) bool {
 	a.flash(fmt.Sprintf("Saved %s", filepath.Base(tab.Path)))
 	// Format-on-save runs after the disk write succeeds, so a broken
 	// formatter never blocks the user's save from landing. The
-	// formatter (when configured + trusted) reloads the buffer
-	// asynchronously via formatDoneEvent — see format.go.
-	a.runFormatOnSave(idx)
+	// formatter (when configured + trusted, or the builtin Go pass)
+	// reloads the buffer asynchronously via formatDoneEvent — see
+	// format.go. Explicit saves are loud: prompts and flashes allowed.
+	a.runFormatOnSave(idx, false)
 	return true
 }
 
