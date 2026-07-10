@@ -186,8 +186,15 @@ individual tree/git/finder refreshes.
 ### Modal layout via `relY` and dynamic `labelFor`
 The action menu uses named struct literals with an optional `labelFor`
 hook so labels like "Show Sidebar" / "Hide Sidebar" toggle in place.
-Dividers are drawn at fixed `relY` offsets — when adding a menu item,
-update those offsets and `modalHeight`.
+`menuLayout` recomputes every row's `relY`, the divider offsets, and
+the modal height on each call — adding a menu item is just adding it
+to its group in `builtinMenuGroups` (then updating the geometry pins
+in `TestMenuLayout_NoCustomActions`). When the layout is taller than
+the window, the modal clamps to the window and scrolls: frame + title
+stay pinned, wheel / keyboard selection move the rows, ▲/▼ mark
+clipped content. All scrolled geometry flows through
+`menuItemIndexAt` / `menuScrollOffset` — don't hand-compute row
+positions anywhere else.
 
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.

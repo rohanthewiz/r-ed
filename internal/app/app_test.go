@@ -1474,6 +1474,10 @@ func TestHandleMouse_SidebarSplitterDrag(t *testing.T) {
 // dismisses on outside click.
 func TestHandleMenuMouse_ClicksRowAndOutside(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
+	// The toggle row lives near the menu's bottom, past what a 40-row
+	// screen shows of the 46-row layout; give it room so this test stays
+	// about click dispatch (scrolled clicks are pinned separately).
+	a.height = 50
 	a.openMenu()
 	mx, my, _, _ := a.menuModalRect()
 	// Click on the sidebar toggle row — flips the sidebar.
@@ -2122,5 +2126,164 @@ func TestWorkspaceChanged_RefreshesTreeAndToleratesNilFinder(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("workspaceChanged should refresh the tree to include fresh.txt")
+	}
+}
+
+// TestMenuModalRect_ClampsToWindowHeight pins the overflow contract:
+// on a screen shorter than the layout the modal takes the full window
+// height instead of drawing rows off-screen, and menuMaxScroll exposes
+// exactly the hidden remainder.
+func TestMenuModalRect_ClampsToWindowHeight(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	_, y, _, h := a.menuModalRect()
+	if h != 30 || y != 0 {
+		t.Fatalf("clamped rect = y%d h%d, want y0 h30", y, h)
+	}
+	_, _, layoutH := a.menuLayout()
+	if got := a.menuMaxScroll(); got != layoutH-30 {
+		t.Fatalf("menuMaxScroll = %d, want %d", got, layoutH-30)
+	}
+
+	// A tall window fits everything — no scroll range at all.
+	a.height = 50
+	if got := a.menuMaxScroll(); got != 0 {
+		t.Fatalf("tall-window menuMaxScroll = %d, want 0", got)
+	}
+}
+
+// TestScrollMenu_Clamps pins the wheel mutator's band: over-scrolling
+// in either direction sticks to the ends rather than running past.
+func TestScrollMenu_Clamps(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu()
+
+	a.scrollMenu(999)
+	if got := a.menuScrollOffset(); got != a.menuMaxScroll() {
+		t.Fatalf("over-scroll offset = %d, want max %d", got, a.menuMaxScroll())
+	}
+	a.scrollMenu(-999)
+	if got := a.menuScrollOffset(); got != 0 {
+		t.Fatalf("under-scroll offset = %d, want 0", got)
+	}
+}
+
+// TestMenuItemIndexAt_MapsThroughScroll pins the click/hover geometry
+// on a clipped menu: scrolled to the bottom, the last visible band row
+// is the Quit row — the exact row an unscrolled short menu could never
+// reach — while the pinned header rows never map to an item.
+func TestMenuItemIndexAt_MapsThroughScroll(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu()
+	a.scrollMenu(999) // all the way down
+	mx, my, _, mh := a.menuModalRect()
+
+	items, _, _ := a.menuLayout()
+	idx := a.menuItemIndexAt(mx+5, my+mh-2)
+	if idx < 0 || items[idx].label != "Quit editor" {
+		t.Fatalf("bottom band row = item %d, want the Quit row", idx)
+	}
+	if got := a.menuItemIndexAt(mx+5, my+1); got != -1 {
+		t.Fatalf("title row mapped to item %d, want -1", got)
+	}
+	if got := a.menuItemIndexAt(mx+5, my+mh-1); got != -1 {
+		t.Fatalf("bottom border mapped to item %d, want -1", got)
+	}
+}
+
+// TestHandleMenuMouse_ClickAfterScroll drives a scrolled click through
+// the real dispatch: on a 30-row screen Quit sits past the fold until
+// the menu scrolls, then a click on the bottom band row fires it.
+func TestHandleMenuMouse_ClickAfterScroll(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu()
+	a.scrollMenu(999)
+	mx, my, _, mh := a.menuModalRect()
+
+	a.handleMenuMouse(mx+5, my+mh-2, tcell.Button1)
+	if !a.quit {
+		t.Fatal("scrolled click on the Quit row should quit")
+	}
+}
+
+// TestMenuMoveSelection_ScrollsIntoView pins keyboard reachability on a
+// clipped menu: wrapping the selection to the last enabled row (Quit)
+// must scroll it into the visible band, per the ensure-visible-on-
+// selection-change rule.
+func TestMenuMoveSelection_ScrollsIntoView(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu() // selects the first enabled row, scroll 0
+
+	a.menuMoveSelection(-1) // wrap up to the last enabled row: Quit
+	items, _, _ := a.menuLayout()
+	if items[a.hoveredMenuRow].label != "Quit editor" {
+		t.Fatalf("selection = %q, want wrap to Quit", items[a.hoveredMenuRow].label)
+	}
+	_, _, _, mh := a.menuModalRect()
+	relY := items[a.hoveredMenuRow].relY - a.menuScrollOffset()
+	if relY < menuPinnedRows || relY > mh-2 {
+		t.Fatalf("selected row at band offset %d, want within [%d,%d]", relY, menuPinnedRows, mh-2)
+	}
+
+	a.menuMoveSelection(1) // wrap back down to the first enabled row
+	relY = items[a.hoveredMenuRow].relY - a.menuScrollOffset()
+	if relY < menuPinnedRows || relY > mh-2 {
+		t.Fatalf("wrapped selection at band offset %d, want visible", relY)
+	}
+}
+
+// TestHandleMouse_WheelScrollsOpenMenu pins the router: wheel events
+// while the menu is open scroll the menu itself (by wheelLines) instead
+// of falling through to the panes behind it.
+func TestHandleMouse_WheelScrollsOpenMenu(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu()
+	mx, my, _, _ := a.menuModalRect()
+
+	a.handleMouse(tcell.NewEventMouse(mx+5, my+10, tcell.WheelDown, tcell.ModNone))
+	if got := a.menuScrollOffset(); got != wheelLines {
+		t.Fatalf("wheel-down offset = %d, want %d", got, wheelLines)
+	}
+	a.handleMouse(tcell.NewEventMouse(mx+5, my+10, tcell.WheelUp, tcell.ModNone))
+	if got := a.menuScrollOffset(); got != 0 {
+		t.Fatalf("wheel-up offset = %d, want 0", got)
+	}
+	if !a.menuOpen {
+		t.Fatal("wheel must not close the menu")
+	}
+}
+
+// TestDrawMenu_ScrollIndicators renders the clipped menu on the sim
+// screen: at the top only ▼ shows (with the tail rows hidden), at the
+// bottom ▲ shows and the Quit row becomes visible.
+func TestDrawMenu_ScrollIndicators(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 30
+	a.openMenu()
+
+	a.draw()
+	a.screen.Show()
+	content := screenText(a)
+	if !strings.Contains(content, "▼") {
+		t.Fatalf("clipped menu missing ▼ indicator:\n%s", content)
+	}
+	if strings.Contains(content, "Quit editor") {
+		t.Fatal("Quit row should be below the fold before scrolling")
+	}
+
+	a.scrollMenu(999)
+	a.draw()
+	a.screen.Show()
+	content = screenText(a)
+	if !strings.Contains(content, "▲") {
+		t.Fatalf("bottom-scrolled menu missing ▲ indicator:\n%s", content)
+	}
+	if !strings.Contains(content, "Quit editor") {
+		t.Fatalf("Quit row should be visible after scrolling:\n%s", content)
 	}
 }

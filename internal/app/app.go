@@ -342,6 +342,13 @@ type App struct {
 	menuOpen       bool
 	hoveredMenuRow int       // index into menuItems of the row under the mouse, or -1.
 	lastEscape     time.Time // timestamp of the previous Esc press, for double-tap detection.
+	// menuScroll is how many content rows the action menu is scrolled
+	// when its layout is taller than the window (the menu outgrew short
+	// terminals at ~40 rows). 0 whenever everything fits; reset on every
+	// open. Always read through menuScrollOffset(), which re-clamps
+	// against the live geometry so a mid-menu terminal resize can't
+	// strand the offset past the end.
+	menuScroll int
 
 	// modal is the active secondary overlay (prompt, confirm,
 	// dirty-close, form, tree context menu, file finder) or nil when
@@ -891,12 +898,24 @@ func (a *App) menuButtonRect() (x, y, w, h int) {
 	return a.sidebarW(), 0, menuButtonWidth, 1
 }
 
+// menuPinnedRows is the fixed header of the action modal — top border,
+// title, and the divider under it — that never scrolls. Content rows
+// start at this relY; the scrollable band on screen runs from
+// my+menuPinnedRows to my+mh-2 (the row above the bottom border).
+const menuPinnedRows = 3
+
 // menuModalRect returns the on-screen rectangle of the action modal,
 // centered in the window. Height is derived from the current layout
-// so adding custom actions grows the modal automatically.
+// so adding custom actions grows the modal automatically — but clamped
+// to the window, with the overflow reachable by scrolling (see
+// menuScrollOffset): the menu outgrew small terminals, and drawing rows
+// off-screen made the bottom groups unreachable.
 func (a *App) menuModalRect() (x, y, w, h int) {
 	w = modalWidth
 	_, _, h = a.menuLayout()
+	if h > a.height {
+		h = a.height
+	}
 	x = (a.width - w) / 2
 	y = (a.height - h) / 2
 	if x < 0 {
@@ -906,6 +925,88 @@ func (a *App) menuModalRect() (x, y, w, h int) {
 		y = 0
 	}
 	return
+}
+
+// menuMaxScroll is the largest useful menu scroll offset: the number of
+// layout rows that don't fit the clamped modal. 0 when everything fits.
+func (a *App) menuMaxScroll() int {
+	_, _, layoutH := a.menuLayout()
+	_, _, _, mh := a.menuModalRect()
+	if max := layoutH - mh; max > 0 {
+		return max
+	}
+	return 0
+}
+
+// menuScrollOffset is the effective scroll — the stored offset re-
+// clamped against the current geometry. Draw, hit-testing, and the
+// scroll mutators all read this single source so a stale menuScroll
+// (window grew mid-menu) can never make them disagree.
+func (a *App) menuScrollOffset() int {
+	s := a.menuScroll
+	if max := a.menuMaxScroll(); s > max {
+		s = max
+	}
+	if s < 0 {
+		s = 0
+	}
+	return s
+}
+
+// scrollMenu moves the menu's scroll offset by delta rows, clamped to
+// the valid band. Wheel-driven; a no-op when the whole menu fits.
+func (a *App) scrollMenu(delta int) {
+	a.menuScroll = a.menuScrollOffset() + delta
+	if a.menuScroll < 0 {
+		a.menuScroll = 0
+	}
+	if max := a.menuMaxScroll(); a.menuScroll > max {
+		a.menuScroll = max
+	}
+}
+
+// menuItemIndexAt maps a screen position to the index of the menu item
+// drawn there, honoring the scroll offset, or -1 for anything that
+// isn't an item row (borders, title, dividers, outside the modal).
+// The one geometry source for both hover tracking and click dispatch —
+// if they computed the mapping separately, a scroll bug would make the
+// highlight and the click disagree about which row is which.
+func (a *App) menuItemIndexAt(x, y int) int {
+	mx, my, mw, mh := a.menuModalRect()
+	if x < mx || x >= mx+mw || y < my+menuPinnedRows || y > my+mh-2 {
+		return -1
+	}
+	relY := y - my + a.menuScrollOffset()
+	items, _, _ := a.menuLayout()
+	for i, item := range items {
+		if item.relY == relY {
+			return i
+		}
+	}
+	return -1
+}
+
+// menuEnsureHoveredVisible scrolls the menu just enough to bring the
+// keyboard-selected row into the visible band. Called only when the
+// selection itself moves (Down/Up), never from draw — the same
+// selection-change-only rule as the editor's cursorMoved flag and the
+// git panel's list, so wheel-scrolling away from the highlight doesn't
+// snap back.
+func (a *App) menuEnsureHoveredVisible() {
+	items, _, _ := a.menuLayout()
+	if a.hoveredMenuRow < 0 || a.hoveredMenuRow >= len(items) {
+		return
+	}
+	relY := items[a.hoveredMenuRow].relY
+	_, _, _, mh := a.menuModalRect()
+	scroll := a.menuScrollOffset()
+	if relY-scroll < menuPinnedRows {
+		scroll = relY - menuPinnedRows
+	}
+	if relY-scroll > mh-2 {
+		scroll = relY - (mh - 2)
+	}
+	a.menuScroll = scroll
 }
 
 // -----------------------------------------------------------------------------
@@ -1058,6 +1159,18 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 	}
 
 	if a.menuOpen {
+		// Wheel scrolls the menu itself when it's taller than the window;
+		// the hover then re-derives from the rows' new positions so the
+		// highlight tracks what's actually under the pointer.
+		if btn&(tcell.WheelUp|tcell.WheelDown) != 0 {
+			delta := wheelLines
+			if btn&tcell.WheelUp != 0 {
+				delta = -wheelLines
+			}
+			a.scrollMenu(delta)
+			a.updateMenuHover(x, y)
+			return
+		}
 		a.updateMenuHover(x, y)
 		a.handleMenuMouse(x, y, btn)
 		return
@@ -1178,16 +1291,13 @@ func (a *App) handleMenuMouse(x, y int, btn tcell.ButtonMask) {
 		a.closeMenu()
 		return
 	}
-	relY := y - my
-	items, _, _ := a.menuLayout()
-	for _, item := range items {
-		if item.relY != relY {
-			continue
-		}
-		if item.enabled(a) {
-			item.action(a)
-		}
+	idx := a.menuItemIndexAt(x, y)
+	if idx < 0 {
 		return
+	}
+	items, _, _ := a.menuLayout()
+	if items[idx].enabled(a) {
+		items[idx].action(a)
 	}
 }
 
@@ -1716,6 +1826,7 @@ func (a *App) pasteClipboard() {
 func (a *App) openMenu() {
 	a.closeAllModals()
 	a.menuOpen = true
+	a.menuScroll = 0
 	a.menuMoveSelection(1)
 }
 
@@ -1744,6 +1855,9 @@ func (a *App) menuMoveSelection(dir int) {
 		idx := ((start+dir*i)%n + n) % n
 		if items[idx].enabled(a) {
 			a.hoveredMenuRow = idx
+			// Keyboard navigation must be able to reach rows the clamped
+			// modal has scrolled out of view (wrap-around included).
+			a.menuEnsureHoveredVisible()
 			return
 		}
 	}
@@ -1768,6 +1882,7 @@ func (a *App) menuActivate() {
 func (a *App) closeMenu() {
 	a.menuOpen = false
 	a.hoveredMenuRow = -1
+	a.menuScroll = 0
 }
 
 // updateMenuHover sets hoveredMenuRow to the index of the enabled menu row
@@ -1775,17 +1890,13 @@ func (a *App) closeMenu() {
 // title, or anywhere outside the modal.
 func (a *App) updateMenuHover(x, y int) {
 	a.hoveredMenuRow = -1
-	mx, my, mw, mh := a.menuModalRect()
-	if x < mx || x >= mx+mw || y < my || y >= my+mh {
+	idx := a.menuItemIndexAt(x, y)
+	if idx < 0 {
 		return
 	}
-	relY := y - my
 	items, _, _ := a.menuLayout()
-	for i, item := range items {
-		if item.relY == relY && item.enabled(a) {
-			a.hoveredMenuRow = i
-			return
-		}
+	if items[idx].enabled(a) {
+		a.hoveredMenuRow = idx
 	}
 }
 
@@ -2444,9 +2555,18 @@ func (a *App) drawMenu() {
 
 	// Horizontal dividers between action groups. The dy list comes from
 	// menuLayout — including the always-on row under the title — so it
-	// stays in sync with whatever rows are actually being drawn.
+	// stays in sync with whatever rows are actually being drawn. The
+	// title divider (dy 2) is part of the pinned header; the rest scroll
+	// with the content and are skipped when they land outside the band.
+	scroll := a.menuScrollOffset()
 	for _, dy := range dividers {
 		cy := my + dy
+		if dy >= menuPinnedRows {
+			cy -= scroll
+			if cy < my+menuPinnedRows || cy > my+mh-2 {
+				continue
+			}
+		}
 		a.screen.SetContent(mx, cy, '├', nil, borderStyle)
 		a.screen.SetContent(mx+mw-1, cy, '┤', nil, borderStyle)
 		for cx := mx + 1; cx < mx+mw-1; cx++ {
@@ -2476,7 +2596,10 @@ func (a *App) drawMenu() {
 	hoverStyle := tcell.StyleDefault.Background(hoverBg).Foreground(a.theme.Text).Bold(true)
 	hoverChevStyle := tcell.StyleDefault.Background(hoverBg).Foreground(a.theme.AccentSoft).Bold(true)
 	for i, item := range items {
-		cy := my + item.relY
+		cy := my + item.relY - scroll
+		if cy < my+menuPinnedRows || cy > my+mh-2 {
+			continue // scrolled out of the clamped modal
+		}
 		enabled := item.enabled(a)
 		hovered := enabled && i == a.hoveredMenuRow
 
@@ -2504,6 +2627,16 @@ func (a *App) drawMenu() {
 		}
 		drawAt(a.screen, mx+2, cy, "▸", chevStyle)
 		drawAt(a.screen, mx+4, cy, label, labelStyle)
+	}
+
+	// Scroll indicators: ▲ on the pinned title divider when rows are
+	// hidden above, ▼ on the bottom border when rows are hidden below —
+	// without them a clipped menu reads as the whole menu.
+	if scroll > 0 {
+		drawAt(a.screen, mx+(mw-3)/2, my+2, " ▲ ", chevronStyle)
+	}
+	if scroll < a.menuMaxScroll() {
+		drawAt(a.screen, mx+(mw-3)/2, my+mh-1, " ▼ ", chevronStyle)
 	}
 
 	a.screen.HideCursor()
