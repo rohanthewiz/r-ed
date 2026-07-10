@@ -217,7 +217,9 @@ func TestGitPanelClick_SelectsAndCloses(t *testing.T) {
 	}
 
 	px, py, pw, _ := a.gitPanelRect()
-	a.gitPanelClick(px+2, py+2) // second list row
+	// Click past the checkbox gutter — the gutter toggles staging
+	// instead of selecting (covered by its own test).
+	a.gitPanelClick(px+gitPanelCheckboxW+1, py+2) // second list row
 	if a.gitPanel.selected != 1 {
 		t.Fatalf("selected = %d, want 1", a.gitPanel.selected)
 	}
@@ -278,7 +280,8 @@ func TestDrawGitPanel_Smoke(t *testing.T) {
 	a.draw()
 	a.screen.Show()
 	content := screenText(a)
-	for _, want := range []string{"Git changes", "main.go", "+new line", "-old line", "✕"} {
+	// "[ ]" is the unstaged checkbox for the " M" row.
+	for _, want := range []string{"Git changes", "[ ]", "main.go", "+new line", "-old line", "✕"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("drawn panel missing %q:\n%s", want, content)
 		}
@@ -522,5 +525,94 @@ func TestLeaders_ResizeGitPanel(t *testing.T) {
 	shrink(a)
 	if got := a.gitPanelHeight(); got != base {
 		t.Fatalf("shrink: got %d, want back to %d", got, base)
+	}
+}
+
+// TestGitPanelStageState pins the porcelain-XY → checkbox-state map:
+// index-only changes read as fully staged, work-tree-only and untracked
+// as unstaged, and mixed index+work-tree codes as partial. Short or
+// empty codes (defensive) read as unstaged.
+func TestGitPanelStageState(t *testing.T) {
+	cases := []struct {
+		code string
+		want gitStageState
+	}{
+		{"??", stageNone},
+		{" M", stageNone},
+		{" D", stageNone},
+		{"M ", stageFull},
+		{"A ", stageFull},
+		{"D ", stageFull},
+		{"R ", stageFull},
+		{"MM", stagePartial},
+		{"AM", stagePartial},
+		{"", stageNone},
+		{"M", stageNone},
+	}
+	for _, c := range cases {
+		if got := gitPanelStageState(c.code); got != c.want {
+			t.Errorf("gitPanelStageState(%q) = %d, want %d", c.code, got, c.want)
+		}
+	}
+}
+
+// TestGitPanelCheckbox pins the three glyphs — draw and hit-test both
+// assume the box is exactly three cells wide.
+func TestGitPanelCheckbox(t *testing.T) {
+	for state, want := range map[gitStageState]string{
+		stageNone: "[ ]", stagePartial: "[~]", stageFull: "[x]",
+	} {
+		if got := gitPanelCheckbox(state); got != want {
+			t.Errorf("checkbox(%d) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+// TestGitPanelCheckboxClick_StagesAndUnstages is the checkbox e2e:
+// ticking an unstaged file's box runs git add through the async
+// pipeline and the done-event refresh flips the row to [x]; ticking
+// again unstages without touching the work-tree edit. The selection
+// must not move — ticking boxes is not browsing.
+func TestGitPanelCheckboxClick_StagesAndUnstages(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not on PATH")
+	}
+	repo, file := panelRepo(t)
+	writeFileT(t, file, "one\nCHANGED\n")
+
+	a := newTestApp(t, repo)
+	a.refreshGitStatus()
+	a.menuToggleGitPanel()
+	if len(a.gitPanel.files) != 1 || gitPanelStageState(a.gitPanel.files[0].Code) != stageNone {
+		t.Fatalf("panel files = %+v, want one unstaged entry", a.gitPanel.files)
+	}
+
+	px, py, _, _ := a.gitPanelRect()
+	a.gitPanelClick(px+1, py+1) // first row's checkbox gutter
+	pumpAppEvents(t, a, func() bool {
+		return len(a.gitPanel.files) == 1 &&
+			gitPanelStageState(a.gitPanel.files[0].Code) == stageFull
+	})
+	if staged := gitOut(t, repo, "diff", "--cached", "--name-only"); staged != "f.txt" {
+		t.Fatalf("staged files = %q, want f.txt", staged)
+	}
+
+	a.gitPanelClick(px+1, py+1) // same box, now [x] → unstage
+	pumpAppEvents(t, a, func() bool {
+		return len(a.gitPanel.files) == 1 &&
+			gitPanelStageState(a.gitPanel.files[0].Code) == stageNone
+	})
+	if staged := gitOut(t, repo, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("staged files after unstage = %q, want none", staged)
+	}
+	content, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(content) != "one\nCHANGED\n" {
+		t.Fatalf("work-tree content = %q — unstage must not revert the edit", content)
+	}
+	if a.gitPanel.selected != 0 {
+		t.Fatalf("selected = %d, checkbox clicks must not move selection", a.gitPanel.selected)
 	}
 }

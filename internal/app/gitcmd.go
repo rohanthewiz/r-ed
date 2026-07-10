@@ -5,10 +5,11 @@
 // Copyright: 2026 Rohan Allison. All rights reserved.
 // =============================================================================
 
-// gitcmd.go implements the write-side git commands — stage the active
-// file, commit what's staged, switch branches — reachable from the ≡
-// menu's Git group and therefore from the command palette (which lists
-// enabled menu rows automatically).
+// gitcmd.go implements the write-side git commands — stage / unstage a
+// file, commit what's staged, stash / pop, switch branches — reachable
+// from the ≡ menu's Git group and therefore from the command palette
+// (which lists enabled menu rows automatically). The git panel's
+// checkboxes reuse the stage/unstage helpers here.
 //
 // The moving parts follow the two house patterns they build on:
 //
@@ -100,6 +101,18 @@ func (a *App) hasStageableFile() bool {
 	return t != nil && t.Path != "" && a.tree.DirtyFiles[t.Path]
 }
 
+// hasUnstageableFile gates "Unstage file": the active tab must carry a
+// staged change per the last git-status snapshot — mirror image of
+// hasStageableFile, reading the per-file staged set instead of the
+// dirty set.
+func (a *App) hasUnstageableFile() bool {
+	if !a.gitIsRepo {
+		return false
+	}
+	t := a.activeTabPtr()
+	return t != nil && t.Path != "" && a.gitStagedFiles[t.Path]
+}
+
 // hasGitStaged gates "Commit staged": something must actually sit in
 // the index. The flag refreshes on the 10s tick and after every git
 // command, so a stage performed here enables the commit row as soon
@@ -108,20 +121,81 @@ func (a *App) hasGitStaged() bool {
 	return a.gitIsRepo && a.gitHasStaged
 }
 
+// hasGitChanges gates "Stash changes": stashing with a clean tree only
+// yields git's "No local changes to save" — dim the row instead of
+// offering the error. DirtyFiles covers staged, unstaged, and untracked
+// entries alike, exactly the set `stash push -u` would take.
+func (a *App) hasGitChanges() bool {
+	return a.gitIsRepo && a.tree != nil && len(a.tree.DirtyFiles) > 0
+}
+
+// hasGitStash gates "Pop stash": refs/stash must exist. Field read for
+// the same fork-free reason as the other predicates.
+func (a *App) hasGitStash() bool {
+	return a.gitIsRepo && a.gitHasStash
+}
+
 // -----------------------------------------------------------------------------
 // Menu actions
 // -----------------------------------------------------------------------------
 
-// menuGitStageFile stages the active tab's file (`git add`). The flash
-// label carries the basename so "Stage main.go — done" confirms which
-// file landed in the index.
+// stageFilePath stages one file (`git add`), shared by the menu row and
+// the git panel's checkboxes. The flash label carries the basename so
+// "Stage main.go — done" confirms which file landed in the index. Also
+// the right verb for a deleted work-tree file: modern git add stages
+// the removal.
+func (a *App) stageFilePath(path string) {
+	a.runGitCmd("Stage "+filepath.Base(path), "add", "--", path)
+}
+
+// unstageFilePath removes one file's staged changes from the index.
+// `git reset -- <path>` rather than `restore --staged` because reset
+// also works on an unborn branch (it resets against the empty tree),
+// where restore fails with "could not resolve HEAD" — and a first-ever
+// commit is exactly when someone plays with staging.
+func (a *App) unstageFilePath(path string) {
+	a.runGitCmd("Unstage "+filepath.Base(path), "reset", "-q", "--", path)
+}
+
+// menuGitStageFile stages the active tab's file.
 func (a *App) menuGitStageFile() {
 	a.closeMenu()
 	t := a.activeTabPtr()
 	if t == nil || t.Path == "" {
 		return
 	}
-	a.runGitCmd("Stage "+filepath.Base(t.Path), "add", "--", t.Path)
+	a.stageFilePath(t.Path)
+}
+
+// menuGitUnstageFile pulls the active tab's file back out of the index —
+// the undo for a mistaken Stage file, without touching the work tree.
+func (a *App) menuGitUnstageFile() {
+	a.closeMenu()
+	t := a.activeTabPtr()
+	if t == nil || t.Path == "" {
+		return
+	}
+	a.unstageFilePath(t.Path)
+}
+
+// menuGitStash shelves every local change (`stash push -u`). Untracked
+// files are included because the user's intent is "give me a clean
+// tree" — leaving new files behind makes the tree look only half
+// stashed. No message prompt: git's auto label (branch + subject)
+// identifies the entry, and the prompt modal rejects empty submits, so
+// prompting would force a message git itself treats as optional.
+func (a *App) menuGitStash() {
+	a.closeMenu()
+	a.runGitCmd("Stash changes", "stash", "push", "-u")
+}
+
+// menuGitStashPop re-applies the most recent stash entry and drops it on
+// success (`stash pop`). Conflicts surface through the failure modal
+// with git's own explanation, and git keeps the entry in that case —
+// nothing is lost.
+func (a *App) menuGitStashPop() {
+	a.closeMenu()
+	a.runGitCmd("Pop stash", "stash", "pop")
 }
 
 // menuGitCommit prompts for a commit message, then commits whatever is

@@ -195,7 +195,10 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Next change", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
 			{label: "Previous change", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
 			{label: "Stage file", action: (*App).menuGitStageFile, enabled: (*App).hasStageableFile},
+			{label: "Unstage file", action: (*App).menuGitUnstageFile, enabled: (*App).hasUnstageableFile},
 			{label: "Commit staged", action: (*App).menuGitCommit, enabled: (*App).hasGitStaged},
+			{label: "Stash changes", action: (*App).menuGitStash, enabled: (*App).hasGitChanges},
+			{label: "Pop stash", action: (*App).menuGitStashPop, enabled: (*App).hasGitStash},
 			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
 			{action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
 		},
@@ -376,14 +379,18 @@ type App struct {
 	// a git repo. Updated on the same 10-second tick as refreshGitStatus.
 	gitBranch string
 
-	// gitIsRepo / gitHasStaged mirror the last git-status snapshot:
-	// whether the project root sits inside a work tree at all, and
-	// whether anything is staged for commit. They exist so the menu
-	// predicates for the git command rows (Stage file / Commit staged /
-	// Switch branch) are pure field reads — running `git` inside an
-	// enabled() check would fork on every menu draw.
-	gitIsRepo    bool
-	gitHasStaged bool
+	// gitIsRepo / gitHasStaged / gitHasStash / gitStagedFiles mirror the
+	// last git-status snapshot: whether the project root sits inside a
+	// work tree at all, whether anything is staged for commit, whether a
+	// stash entry exists to pop, and which files carry staged changes.
+	// They exist so the menu predicates for the git command rows (Stage /
+	// Unstage file, Commit staged, Stash, Switch branch) are pure field
+	// reads — running `git` inside an enabled() check would fork on every
+	// menu draw. gitStagedFiles also feeds the git panel's checkboxes.
+	gitIsRepo      bool
+	gitHasStaged   bool
+	gitHasStash    bool
+	gitStagedFiles map[string]bool
 
 	// fileDiffs holds the latest parsed `git diff -U0` hunks per open
 	// file path, feeding the gutter marks and hunk navigation. Written
@@ -511,6 +518,8 @@ func (a *App) refreshGitStatus() {
 	st := loadGitStatus(a.rootDir)
 	a.gitIsRepo = st.IsRepo
 	a.gitHasStaged = st.HasStaged
+	a.gitHasStash = st.HasStash
+	a.gitStagedFiles = st.StagedFiles
 	if !st.IsRepo {
 		a.tree.DirtyFiles = nil
 		a.tree.DirtyFolders = nil

@@ -22,30 +22,25 @@ import (
 // pumpAppEvents drains the simulation screen's event queue through
 // handleEvent until cond holds — the same pump pattern the gitdiff and
 // format async tests use, pulled into a helper because every e2e test
-// in this file needs it. The poll runs on a goroutine so a lost event
-// fails the test at the deadline instead of hanging it.
+// in this file needs it. Deliberately goroutine-free: an earlier
+// version polled on a goroutine that outlived its pump, and a second
+// pump in the same test raced it for events — the leftover poller
+// swallowed the done-event and the second pump timed out. HasPendingEvent
+// keeps PollEvent from ever blocking, so the deadline still fires on a
+// lost event instead of hanging the test.
 func pumpAppEvents(t *testing.T, a *App, cond func() bool) {
 	t.Helper()
-	events := make(chan tcell.Event, 8)
-	go func() {
-		for {
-			ev := a.screen.PollEvent()
-			if ev == nil {
-				return
-			}
-			events <- ev
-		}
-	}()
-	deadline := time.After(3 * time.Second)
-	for {
-		if cond() {
-			return
-		}
-		select {
-		case ev := <-events:
-			a.handleEvent(ev)
-		case <-deadline:
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
 			t.Fatal("condition not met within 3s")
+		}
+		if !a.screen.HasPendingEvent() {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		if ev := a.screen.PollEvent(); ev != nil {
+			a.handleEvent(ev)
 		}
 	}
 }
@@ -129,7 +124,7 @@ func TestHandleGitCmdDone_FailureOpensInfoModal(t *testing.T) {
 	}
 }
 
-// TestGitPredicates_NonRepo pins that all three git-command rows stay
+// TestGitPredicates_NonRepo pins that every git-command row stays
 // disabled outside a repository, even with a file tab open.
 func TestGitPredicates_NonRepo(t *testing.T) {
 	dir := t.TempDir()
@@ -141,7 +136,8 @@ func TestGitPredicates_NonRepo(t *testing.T) {
 	a.refreshGitStatus()
 	a.openFile(target)
 
-	if a.hasGitRepo() || a.hasStageableFile() || a.hasGitStaged() {
+	if a.hasGitRepo() || a.hasStageableFile() || a.hasGitStaged() ||
+		a.hasUnstageableFile() || a.hasGitChanges() || a.hasGitStash() {
 		t.Fatal("git command predicates must all be false outside a repo")
 	}
 }
@@ -291,5 +287,98 @@ func TestMenuGitSwitchBranch_NoOtherBranches(t *testing.T) {
 	}
 	if !strings.Contains(a.statusMsg, "No other branches") {
 		t.Fatalf("statusMsg = %q, want the no-branches flash", a.statusMsg)
+	}
+}
+
+// TestMenuGitUnstageFile_AsyncRoundTrip drives the mirror pipeline of
+// the stage test: a staged file enables the Unstage row, unstaging runs
+// `git reset` on a goroutine, and the done-event refresh empties the
+// index and dims the row again — while the work-tree edit survives, so
+// the file flips straight back to stageable.
+func TestMenuGitUnstageFile_AsyncRoundTrip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not on PATH")
+	}
+	repo := initRepo(t)
+	file := filepath.Join(repo, "f.txt")
+	writeFileT(t, file, "one\n")
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-q", "-m", "init")
+	writeFileT(t, file, "one\ntwo\n")
+	gitRun(t, repo, "add", ".")
+
+	a := newTestApp(t, repo)
+	a.refreshGitStatus()
+	a.openFile(file)
+	if !a.hasUnstageableFile() {
+		t.Fatal("staged file should enable the Unstage row")
+	}
+
+	a.menuGitUnstageFile()
+	pumpAppEvents(t, a, func() bool {
+		return strings.Contains(a.statusMsg, "Unstage f.txt — done")
+	})
+
+	if staged := gitOut(t, repo, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("staged files = %q, want none", staged)
+	}
+	if a.hasUnstageableFile() {
+		t.Fatal("done-event refresh should have dimmed the Unstage row")
+	}
+	if !a.hasStageableFile() {
+		t.Fatal("work-tree edit must survive the unstage and re-enable Stage")
+	}
+}
+
+// TestMenuGitStash_PushThenPop walks the full shelve/restore cycle:
+// stashing takes tracked edits AND untracked files (push -u), leaves a
+// clean tree with a poppable entry, and popping brings both changes
+// back and drops the entry — with the menu predicates tracking each
+// step through the done-event refreshes.
+func TestMenuGitStash_PushThenPop(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not on PATH")
+	}
+	repo := initRepo(t)
+	file := filepath.Join(repo, "f.txt")
+	writeFileT(t, file, "one\n")
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-q", "-m", "init")
+	writeFileT(t, file, "one\ntwo\n")
+	writeFileT(t, filepath.Join(repo, "new.txt"), "brand new\n")
+
+	a := newTestApp(t, repo)
+	a.refreshGitStatus()
+	if !a.hasGitChanges() {
+		t.Fatal("dirty tree should enable Stash changes")
+	}
+	if a.hasGitStash() {
+		t.Fatal("no stash yet — Pop stash must start disabled")
+	}
+
+	a.menuGitStash()
+	pumpAppEvents(t, a, func() bool {
+		return strings.Contains(a.statusMsg, "Stash changes — done")
+	})
+	if st := gitOut(t, repo, "status", "--porcelain"); st != "" {
+		t.Fatalf("post-stash status = %q, want clean (untracked stashed too)", st)
+	}
+	if !a.hasGitStash() {
+		t.Fatal("refresh should have enabled Pop stash")
+	}
+	if a.hasGitChanges() {
+		t.Fatal("clean tree should dim Stash changes")
+	}
+
+	a.menuGitStashPop()
+	pumpAppEvents(t, a, func() bool {
+		return strings.Contains(a.statusMsg, "Pop stash — done")
+	})
+	st := gitOut(t, repo, "status", "--porcelain")
+	if !strings.Contains(st, "f.txt") || !strings.Contains(st, "new.txt") {
+		t.Fatalf("post-pop status = %q, want both changes restored", st)
+	}
+	if a.hasGitStash() {
+		t.Fatal("popped entry should be gone — Pop stash must dim again")
 	}
 }

@@ -42,6 +42,14 @@ type gitStatus struct {
 	// with an empty index only produces a git error, so the row stays
 	// dimmed until a stage actually happened.
 	HasStaged bool
+	// StagedFiles holds the absolute paths whose index side (porcelain X
+	// column) carries a staged change. It gates the "Unstage file" menu
+	// row and lets the git panel draw per-file stage checkboxes without
+	// forking git per row. Renames mark both paths, matching DirtyFiles.
+	StagedFiles map[string]bool
+	// HasStash reports whether refs/stash exists — i.e. `git stash pop`
+	// has something to pop. Gates the "Pop stash" menu row.
+	HasStash bool
 }
 
 // loadGitStatus inspects rootDir and returns the set of dirty file paths
@@ -77,10 +85,12 @@ func loadGitStatus(rootDir string) gitStatus {
 
 	dirty := parsePorcelain(out, toplevel)
 	return gitStatus{
-		IsRepo:     true,
-		DirtyFiles: dirty,
-		Branch:     loadGitBranch(rootDir),
-		HasStaged:  hasStagedPorcelain(out),
+		IsRepo:      true,
+		DirtyFiles:  dirty,
+		Branch:      loadGitBranch(rootDir),
+		HasStaged:   hasStagedPorcelain(out),
+		StagedFiles: stagedPorcelainSet(out, toplevel),
+		HasStash:    loadGitHasStash(rootDir),
 	}
 }
 
@@ -102,6 +112,40 @@ func hasStagedPorcelain(out []byte) bool {
 		return true
 	}
 	return false
+}
+
+// stagedPorcelainSet returns the absolute paths of entries whose X
+// column reports a staged change — the per-file refinement of
+// hasStagedPorcelain, reusing parsePorcelain's path handling by feeding
+// it only the staged lines. Renames therefore mark both the old and the
+// new path: the staged rename involves both, and marking both keeps the
+// "is anything about this path staged?" question answerable either way.
+func stagedPorcelainSet(out []byte, toplevel string) map[string]bool {
+	var stagedLines []byte
+	for _, raw := range bytes.Split(out, []byte{'\n'}) {
+		if len(raw) < 4 {
+			continue
+		}
+		switch raw[0] {
+		case ' ', '?', '!':
+			continue
+		}
+		stagedLines = append(stagedLines, raw...)
+		stagedLines = append(stagedLines, '\n')
+	}
+	return parsePorcelain(stagedLines, toplevel)
+}
+
+// loadGitHasStash reports whether the repo has at least one stash entry.
+// rev-parse --verify on refs/stash is the cheapest possible probe (no
+// list formatting, exits non-zero when the ref is absent) and shares the
+// best-effort contract: any failure reads as "no stash".
+func loadGitHasStash(rootDir string) bool {
+	if rootDir == "" {
+		return false
+	}
+	err := exec.Command("git", "-C", rootDir, "rev-parse", "--verify", "--quiet", "refs/stash").Run()
+	return err == nil
 }
 
 // loadGitBranch returns the current branch name for rootDir, or a short

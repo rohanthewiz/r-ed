@@ -13,9 +13,10 @@
 // the sum of what a commit could include — not just the index.
 //
 // It is NOT a modal: the editor keeps the keyboard, the panel is
-// mouse-driven (click a file to see its diff, double-click a diff line
-// to jump the editor there, drag the header rule to resize, wheel to
-// scroll, ✕ or Esc-g to collapse), following the find bar's "strip
+// mouse-driven (click a file to see its diff, tick its checkbox to
+// stage / unstage it, double-click a diff line to jump the editor
+// there, drag the header rule to resize, wheel to scroll, ✕ or Esc-g
+// to collapse), following the find bar's "strip
 // that owns part of the layout" precedent rather than the single-slot
 // overlay system. Esc-= / Esc-- resize from the keyboard.
 //
@@ -48,11 +49,17 @@ const (
 	gitPanelMinHeight = 6
 	gitPanelMaxHeight = 18
 
-	// File-list column bounds. 20 fits "M internal/app/x.go" shapes
-	// without wasting diff columns; 40 stops pathological growth on
-	// ultra-wide terminals.
-	gitPanelMinListW = 20
+	// File-list column bounds. 24 fits "[x] M internal/app/x.go" shapes
+	// (checkbox + code + a useful chunk of path) without wasting diff
+	// columns; 40 stops pathological growth on ultra-wide terminals.
+	gitPanelMinListW = 24
 	gitPanelMaxListW = 40
+
+	// gitPanelCheckboxW is the width of the stage-checkbox gutter at the
+	// left of each file row — " [x] " — and therefore also the click
+	// target: presses at x < px+gitPanelCheckboxW toggle staging, presses
+	// beyond it select the row. One constant so draw and hit-test agree.
+	gitPanelCheckboxW = 5
 
 	// gitPanelMinEditorRows is how much editor a user-driven resize
 	// must leave standing — the panel is a review strip, and dragging
@@ -74,11 +81,55 @@ const gitPanelUntrackedHeader = "new file (untracked)"
 // gitPanelFile is one changed entry in the panel's file list: the
 // absolute path (diff commands and selection identity), the
 // project-relative label the list renders, and the two-char porcelain
-// XY code that picks the row's color and the untracked fallback.
+// XY code that picks the row's color, checkbox state, and the
+// untracked fallback.
 type gitPanelFile struct {
 	Path string
 	Rel  string
 	Code string
+}
+
+// gitStageState classifies a porcelain XY code for the panel's stage
+// checkbox: nothing staged, everything staged, or a mix (index and work
+// tree both carry changes — e.g. "MM" after editing a staged file).
+type gitStageState int
+
+const (
+	stageNone gitStageState = iota
+	stagePartial
+	stageFull
+)
+
+// gitPanelStageState reads a porcelain XY code into a gitStageState.
+// The X column says whether the index has changes (anything but ' ',
+// '?', '!'); the Y column says whether the work tree still differs from
+// the index. Staged X + dirty Y = partial.
+func gitPanelStageState(code string) gitStageState {
+	if len(code) < 2 {
+		return stageNone
+	}
+	switch code[0] {
+	case ' ', '?', '!':
+		return stageNone
+	}
+	if code[1] != ' ' {
+		return stagePartial
+	}
+	return stageFull
+}
+
+// gitPanelCheckbox is the three-cell glyph drawn for each stage state.
+// [~] for partial follows the tri-state checkbox convention — it reads
+// as "some of this file is staged", and clicking it stages the rest.
+func gitPanelCheckbox(s gitStageState) string {
+	switch s {
+	case stageFull:
+		return "[x]"
+	case stagePartial:
+		return "[~]"
+	default:
+		return "[ ]"
+	}
 }
 
 // gitPanelState is the panel's whole state, mutated only on the main
@@ -536,11 +587,32 @@ func (a *App) gitPanelClick(x, y int) {
 	if idx < 0 || idx >= len(a.gitPanel.files) {
 		return
 	}
+	if x < px+gitPanelCheckboxW {
+		// Checkbox gutter: toggle staging without moving the selection —
+		// ticking boxes down the list shouldn't churn the diff pane.
+		a.gitPanelToggleStage(a.gitPanel.files[idx])
+		return
+	}
 	if idx == a.gitPanel.selected {
 		return // re-click on the same row: nothing to refetch
 	}
 	a.gitPanel.selected = idx
 	a.requestGitPanelDiff(a.gitPanel.files[idx])
+}
+
+// gitPanelToggleStage flips one file's staged-ness: fully staged files
+// are unstaged, everything else (unstaged or partial) is staged — so a
+// partially-staged file first completes its staging, and the next click
+// clears it. The commands run through the shared async helpers; the
+// checkbox redraws when the done-event's refresh lands, not
+// optimistically — the porcelain snapshot stays the single source of
+// truth.
+func (a *App) gitPanelToggleStage(f gitPanelFile) {
+	if gitPanelStageState(f.Code) == stageFull {
+		a.unstageFilePath(f.Path)
+		return
+	}
+	a.stageFilePath(f.Path)
 }
 
 // gitPanelJumpToDiffRow opens the selected file and moves the cursor
@@ -715,8 +787,11 @@ func (a *App) drawGitPanelListRow(row, px, ry, listW int) {
 	if len(code) > 2 {
 		code = code[:2]
 	}
-	text := " " + code
-	for len(text) < 4 {
+	// Row shape: " [x] M  path" — the checkbox gutter (gitPanelCheckboxW
+	// cells) first so every box lines up in a tickable column, then the
+	// porcelain code, then the path.
+	text := " " + gitPanelCheckbox(gitPanelStageState(f.Code)) + " " + code
+	for len(text) < gitPanelCheckboxW+3 {
 		text += " "
 	}
 	text += f.Rel

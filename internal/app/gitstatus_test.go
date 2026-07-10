@@ -493,3 +493,51 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestStagedPorcelainSet pins the X-column filter: index-side entries
+// land in the set (renames mark both paths, mixed MM codes count),
+// while work-tree-only and untracked entries do not.
+func TestStagedPorcelainSet(t *testing.T) {
+	out := []byte("M  staged.txt\n" +
+		" M worktree.txt\n" +
+		"?? untracked.txt\n" +
+		"MM both.txt\n" +
+		"R  old.txt -> new.txt\n")
+	got := stagedPorcelainSet(out, "/repo")
+
+	want := []string{"/repo/staged.txt", "/repo/both.txt", "/repo/old.txt", "/repo/new.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("staged set = %v, want %d entries", got, len(want))
+	}
+	for _, p := range want {
+		if !got[p] {
+			t.Errorf("staged set missing %s: %v", p, got)
+		}
+	}
+}
+
+// TestLoadGitHasStash pins the stash probe: false before any stash
+// exists, true once one does, and false for non-repos and empty roots
+// (the best-effort contract).
+func TestLoadGitHasStash(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not on PATH")
+	}
+	repo := initRepo(t)
+	writeFileT(t, filepath.Join(repo, "f.txt"), "x\n")
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-q", "-m", "init")
+	if loadGitHasStash(repo) {
+		t.Fatal("fresh repo must report no stash")
+	}
+
+	writeFileT(t, filepath.Join(repo, "f.txt"), "y\n")
+	gitRun(t, repo, "stash", "push", "-q")
+	if !loadGitHasStash(repo) {
+		t.Fatal("stash entry should be detected")
+	}
+
+	if loadGitHasStash(t.TempDir()) || loadGitHasStash("") {
+		t.Fatal("non-repo / empty root must report no stash")
+	}
+}
