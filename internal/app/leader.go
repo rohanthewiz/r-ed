@@ -54,6 +54,14 @@ func leaderBindings() []leaderBinding {
 		// variant walks backwards, mirroring find's Enter/Shift-Enter.
 		{'h', (*App).menuNextHunk},
 		{'H', (*App).menuPrevHunk},
+		// 'g' for "git" — collapse/expand the diff review panel.
+		// '=' / '-' resize it while it's open (grow/shrink, borrowing
+		// the browser-zoom mnemonic); silent no-ops while collapsed.
+		// No menu rows for these two: resize's primary surface is
+		// dragging the panel header, same as the sidebar splitter.
+		{'g', (*App).menuToggleGitPanel},
+		{'=', (*App).growGitPanel},
+		{'-', (*App).shrinkGitPanel},
 		// LSP trio: 'd' definition, 'i' info (hover), 'o' back "out" of
 		// the jump — 'b' was tempting for back but reads as "buffer" to
 		// vim hands, and the plan pinned 'o' from the start.

@@ -197,6 +197,7 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Stage file", action: (*App).menuGitStageFile, enabled: (*App).hasStageableFile},
 			{label: "Commit staged", action: (*App).menuGitCommit, enabled: (*App).hasGitStaged},
 			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
+			{action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
 		},
 		// Code intelligence (LSP-backed; rows dim when no server)
 		{
@@ -390,6 +391,11 @@ type App struct {
 	// diff lands, and nil-map reads are safe, so no eager init needed.
 	fileDiffs map[string][]diffHunk
 
+	// gitPanel is the collapsible bottom review panel (changed files +
+	// selected file's diff vs HEAD). Mutated only on the main loop;
+	// diff fetches post gitPanelDiffEvents. See gitpanel.go.
+	gitPanel gitPanelState
+
 	// lsp holds the language-server integration state: the connection,
 	// per-document sync bookkeeping, diagnostics, and the definition
 	// back-navigation stack. Mutated only on the main loop; background
@@ -509,11 +515,16 @@ func (a *App) refreshGitStatus() {
 		a.tree.DirtyFiles = nil
 		a.tree.DirtyFolders = nil
 		a.gitBranch = ""
-		return
+	} else {
+		a.tree.DirtyFiles = st.DirtyFiles
+		a.tree.DirtyFolders = dirtyFolderSet(st.DirtyFiles, a.rootDir)
+		a.gitBranch = st.Branch
 	}
-	a.tree.DirtyFiles = st.DirtyFiles
-	a.tree.DirtyFolders = dirtyFolderSet(st.DirtyFiles, a.rootDir)
-	a.gitBranch = st.Branch
+	// The git panel mirrors the same status snapshot — refreshing it
+	// here (a no-op while collapsed) means every path that keeps the
+	// tree's dirty colors honest keeps the panel honest too: the 10s
+	// tick, saves, file ops, and finished git commands.
+	a.refreshGitPanelFiles()
 }
 
 // startTreeRefresh launches a goroutine that posts a treeRefreshEvent every
@@ -596,6 +607,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleCustomActionDone(e)
 	case *gitCmdDoneEvent:
 		a.handleGitCmdDone(e)
+	case *gitPanelDiffEvent:
+		a.handleGitPanelDiff(e)
 	case *formatDoneEvent:
 		a.handleFormatDone(e)
 	case *finderRebuiltEvent:
@@ -836,12 +849,16 @@ func (a *App) tabBarRect() (x, y, w, h int) {
 // editorRect returns the editor body's screen rectangle (everything to the
 // right of the sidebar, between the tab bar and the status bar). When the
 // find bar is open, one row is taken out of the bottom — the bar is
-// pinned directly above the status bar.
+// pinned directly above the status bar. The git panel takes its rows
+// out of the bottom too, stacking above the find bar.
 func (a *App) editorRect() (x, y, w, h int) {
 	sw := a.sidebarW()
 	h = a.height - 2
 	if a.findOpen {
 		h -= findBarHeight
+	}
+	if a.gitPanel.open {
+		h -= a.gitPanelHeight()
 	}
 	return sw, 1, a.width - sw, h
 }
@@ -1104,6 +1121,12 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		return
 	}
 
+	// Git panel resize drag: the header rule follows the mouse row.
+	if leftDown && a.dragMode == "gitpanel" {
+		a.dragGitPanelTo(y)
+		return
+	}
+
 	// Initial press dispatch.
 	if leftDown && a.dragMode == "" {
 		sw := a.sidebarW()
@@ -1115,6 +1138,13 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 			a.sidebarClick(x, y)
 		case y == 0:
 			a.tabBarClick(x, y)
+		// The git panel sits inside the editor's former y-range, so its
+		// hit-test must run before the catch-all editor case. A press
+		// on the header rule starts a resize drag instead of a click.
+		case a.gitPanel.open && a.gitPanelContains(x, y):
+			if a.gitPanelPress(x, y) {
+				a.dragMode = "gitpanel"
+			}
 		case y > 0 && y < a.height-1:
 			a.editorPress(x, y)
 			a.dragMode = "editor"
@@ -1156,6 +1186,10 @@ func (a *App) handleMenuMouse(x, y int, btn tcell.ButtonMask) {
 func (a *App) scrollAt(x, y, delta int) {
 	if sw := a.sidebarW(); sw > 0 && x < sw {
 		a.tree.Scroll(delta)
+		return
+	}
+	if a.gitPanel.open && a.gitPanelContains(x, y) {
+		a.gitPanelScroll(x, y, delta)
 		return
 	}
 	if y > 0 && y < a.height-1 {
@@ -2085,6 +2119,9 @@ func (a *App) draw() {
 		a.drawEmptyEditor()
 	}
 
+	if a.gitPanel.open {
+		a.drawGitPanel()
+	}
 	if a.findOpen {
 		a.drawFindBar()
 	}
