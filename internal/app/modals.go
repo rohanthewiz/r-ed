@@ -671,6 +671,9 @@ func (a *App) openTreeContext(n *filetree.Node, x, y int) {
 		items = append(items, contextItem{label: "Rename", action: ctxRename})
 		items = append(items, contextItem{label: "Delete", action: ctxDelete})
 	}
+	// Zip works on files, folders, and the root alike — the archive
+	// is read-only on the source, so no root guard is needed.
+	items = append(items, contextItem{label: "Zip", action: ctxZip})
 	items = append(items, contextItem{label: "Copy rel path", action: ctxCopyRelativePath})
 	items = append(items, contextItem{label: "Copy abs path", action: ctxCopyAbsolutePath})
 

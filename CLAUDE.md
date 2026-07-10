@@ -48,6 +48,7 @@ internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Rende
 internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib only)
 internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
+internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
 internal/format/              format.json load, trust store, builtin goimports/gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render

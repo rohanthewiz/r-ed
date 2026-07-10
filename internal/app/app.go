@@ -216,6 +216,8 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Delete file", action: (*App).menuDelete, enabled: (*App).hasFileTab},
 			{action: (*App).menuRenameFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).renameFolderLabel},
 			{action: (*App).menuDeleteFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).deleteFolderLabel},
+			{label: "Zip file", action: (*App).menuZipFile, enabled: (*App).hasFileTab},
+			{action: (*App).menuZipFolder, enabled: alwaysTrue, labelFor: (*App).zipFolderLabel},
 			{label: "Copy relative path", action: (*App).menuCopyRelativePath, enabled: (*App).hasFileTab},
 			{label: "Copy absolute path", action: (*App).menuCopyAbsolutePath, enabled: (*App).hasFileTab},
 		},
@@ -636,6 +638,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleGitDiff(e)
 	case *customActionDoneEvent:
 		a.handleCustomActionDone(e)
+	case *zipDoneEvent:
+		a.handleZipDone(e)
 	case *gitCmdDoneEvent:
 		a.handleGitCmdDone(e)
 	case *gitPanelDiffEvent:
