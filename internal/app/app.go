@@ -234,6 +234,7 @@ func builtinMenuGroups() [][]menuItemDef {
 		// View toggle
 		{
 			{action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
+			{action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
 		},
 		// Quit
 		{
@@ -434,6 +435,13 @@ type App struct {
 	// selected file's diff vs HEAD). Mutated only on the main loop;
 	// diff fetches post gitPanelDiffEvents. See gitpanel.go.
 	gitPanel gitPanelState
+
+	// term is the embedded grsh terminal panel. It shares the bottom
+	// strip with the git panel (exactly one may be open) and is the
+	// only surface besides modals that takes the keyboard — via its
+	// focused flag, not the modal slot. Mutated only on the main loop;
+	// Evals run on goroutines and post term*Events. See terminal.go.
+	term termPanelState
 
 	// lsp holds the language-server integration state: the connection,
 	// per-document sync bookkeeping, diagnostics, and the definition
@@ -658,6 +666,10 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleGitCmdDone(e)
 	case *gitPanelDiffEvent:
 		a.handleGitPanelDiff(e)
+	case *termOutputEvent:
+		a.handleTermOutput()
+	case *termDoneEvent:
+		a.handleTermDone(e)
 	case *formatDoneEvent:
 		a.handleFormatDone(e)
 	case *finderRebuiltEvent:
@@ -912,6 +924,9 @@ func (a *App) editorRect() (x, y, w, h int) {
 	if a.gitPanel.open {
 		h -= a.gitPanelHeight()
 	}
+	if a.term.open {
+		h -= a.termPanelHeight()
+	}
 	return sw, 1, a.width - sw, h
 }
 
@@ -1116,6 +1131,15 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	// shortcut: Cmd never collides with tmux prefixes or terminal flow
 	// control, which is what the no-Ctrl rule actually protects.
 	if ev.Key() == tcell.KeyRune && ev.Modifiers()&tcell.ModMeta != 0 {
+		// While the terminal owns the keyboard, Cmd+V pastes the text
+		// clipboard into the command line instead of the editor buffer
+		// (Cmd+C is inert — the panel has no selection to copy).
+		if a.term.open && a.term.focused {
+			if ev.Rune() == 'v' {
+				a.termPasteClip()
+			}
+			return
+		}
 		switch ev.Rune() {
 		case 'c':
 			a.cmdCopy()
@@ -1138,6 +1162,16 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		case tcell.KeyEnter:
 			a.menuActivate()
 		}
+		return
+	}
+
+	// The focused terminal panel owns everything below this point. The
+	// branch sits AFTER the Esc / leader / menu blocks on purpose: the
+	// global command gestures keep working from inside the terminal
+	// (Esc-` back out, Esc-Esc for the menu), only plain editing keys
+	// are claimed.
+	if a.term.open && a.term.focused {
+		a.handleTermKey(ev)
 		return
 	}
 
@@ -1303,8 +1337,20 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		return
 	}
 
+	// Terminal panel resize drag — same gesture, other bottom panel.
+	if leftDown && a.dragMode == "termpanel" {
+		a.dragTermPanelTo(y)
+		return
+	}
+
 	// Initial press dispatch.
 	if leftDown && a.dragMode == "" {
+		// Any press outside the terminal panel hands the keyboard back
+		// to the editor — the mouse-first focus model: you click where
+		// you want to type.
+		if a.term.open && a.term.focused && !a.termPanelContains(x, y) {
+			a.term.focused = false
+		}
 		sw := a.sidebarW()
 		splitX := a.splitterX()
 		switch {
@@ -1320,6 +1366,10 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		case a.gitPanel.open && a.gitPanelContains(x, y):
 			if a.gitPanelPress(x, y) {
 				a.dragMode = "gitpanel"
+			}
+		case a.term.open && a.termPanelContains(x, y):
+			if a.termPanelPress(x, y) {
+				a.dragMode = "termpanel"
 			}
 		case y > 0 && y < a.height-1:
 			a.editorPress(x, y)
@@ -1363,6 +1413,10 @@ func (a *App) scrollAt(x, y, delta int) {
 	}
 	if a.gitPanel.open && a.gitPanelContains(x, y) {
 		a.gitPanelScroll(x, y, delta)
+		return
+	}
+	if a.term.open && a.termPanelContains(x, y) {
+		a.termPanelScroll(delta)
 		return
 	}
 	if y > 0 && y < a.height-1 {
@@ -2297,6 +2351,9 @@ func (a *App) draw() {
 
 	if a.gitPanel.open {
 		a.drawGitPanel()
+	}
+	if a.term.open {
+		a.drawTermPanel()
 	}
 	if a.findOpen {
 		a.drawFindBar()

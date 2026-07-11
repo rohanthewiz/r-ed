@@ -181,6 +181,10 @@ func (a *App) menuToggleGitPanel() {
 	}
 	a.gitPanel.open = !a.gitPanel.open
 	if a.gitPanel.open {
+		// Single-occupancy bottom strip: the terminal yields (its
+		// session and scrollback survive — Esc-` brings it right back).
+		a.term.open = false
+		a.term.focused = false
 		a.refreshGitPanelFiles()
 	}
 }

@@ -50,6 +50,7 @@ internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
+internal/app/terminal.go      Embedded grsh terminal panel (REPL strip, not a PTY)
 internal/format/              format.json load, trust store, builtin goimports/gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
@@ -186,6 +187,36 @@ modal/menu is open, and skip tabs whose disk file changed after load
 (explicit Save remains the overwrite path). The ≡ toggle persists via
 `userconfig.SaveAutoSave`, which round-trips unknown JSON keys — don't
 replace that with a struct marshal. Default is ON.
+
+### Terminal panel (app/terminal.go)
+An embedded grsh session (github.com/rohanthewiz/grsh — the module's
+only public package; the embedding contract lives in that repo's
+docs/EMBEDDING.md), hosted as a REPL strip. NOT a PTY — do not add
+one, or a VT emulator; full-screen child apps (vim, htop) are out of
+scope by design. House rules:
+
+- **Single-occupancy bottom strip**: the terminal and the git panel
+  swap, never stack (opening one collapses the other). Two resizable
+  strips would need circular height-clamp math on small windows —
+  keep the exclusivity.
+- **Focus flag, not a modal**: `term.focused` routes plain editing
+  keys to the input line; Esc stays global so leaders and the
+  double-Esc menu keep working from inside the terminal. Any click
+  outside the panel unfocuses. Esc-` is focus-or-toggle.
+- **Coalescing writer**: grsh output lands in `termWriter`'s buffer
+  with at most one `termOutputEvent` in flight — never post
+  per-chunk events (heavy output would overflow tcell's queue).
+- **Stop button, not Ctrl+C**: ⏹ sends Interrupt (SIGINT to the
+  child's own process group), a second press escalates to Kill.
+  grsh's embedded mode guarantees the signal cannot hit the editor.
+- Evals run on goroutines; only main-loop handlers mutate term state.
+  Each completed command calls `refreshTreeNow()` — shell commands
+  create files.
+- grsh's `cd` chdirs the whole editor process (grsh's deliberate
+  design) — keep r-ed's own file operations absolute-path based.
+- Tests inject `fakeTermEval` via the `newTermEvaluator` stub in
+  newTestApp. Only TestTermRealGrshIntegration may execute a real
+  command, and it is restricted to `echo`.
 
 ### Three-way external-change reconciliation (app.go)
 On each tree-refresh tick, `reconcileOpenTabsWithDisk` checks each open

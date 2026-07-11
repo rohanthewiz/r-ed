@@ -16,6 +16,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,13 @@ func newTestApp(t *testing.T, root string) *App {
 	// real resolver either way.
 	builtinCommandFor = func(string) []string { return nil }
 	t.Cleanup(func() { builtinCommandFor = format.BuiltinCommandFor })
+	// Stub the terminal's grsh session for the same reason as the two
+	// above: opening the panel in a test must never create a session
+	// that can execute real commands. Terminal tests reach the fake
+	// through a.term.sess (ensureTermSession fills it lazily).
+	prevTermEval := newTermEvaluator
+	newTermEvaluator = func(io.Writer) termEvaluator { return &fakeTermEval{} }
+	t.Cleanup(func() { newTermEvaluator = prevTermEval })
 	return a
 }
 
@@ -1634,13 +1642,13 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 52 {
-		t.Errorf("modalHeight = %d, want 52", h)
+	if h != 53 {
+		t.Errorf("modalHeight = %d, want 53", h)
 	}
-	if got := len(items); got != 40 {
-		t.Errorf("item count = %d, want 40 built-ins", got)
+	if got := len(items); got != 41 {
+		t.Errorf("item count = %d, want 41 built-ins", got)
 	}
-	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 47, 49}
+	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 47, 50}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1699,8 +1707,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 55 { // 52 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 55", h)
+	if h != 56 { // 53 + 2 items + 1 divider
+		t.Errorf("modalHeight = %d, want 56", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.

@@ -55,13 +55,18 @@ func leaderBindings() []leaderBinding {
 		{'h', (*App).menuNextHunk},
 		{'H', (*App).menuPrevHunk},
 		// 'g' for "git" — collapse/expand the diff review panel.
-		// '=' / '-' resize it while it's open (grow/shrink, borrowing
-		// the browser-zoom mnemonic); silent no-ops while collapsed.
-		// No menu rows for these two: resize's primary surface is
-		// dragging the panel header, same as the sidebar splitter.
+		// '=' / '-' resize whichever bottom panel is open (grow/shrink,
+		// borrowing the browser-zoom mnemonic); silent no-ops while
+		// both are collapsed. No menu rows for these two: resize's
+		// primary surface is dragging the panel header, same as the
+		// sidebar splitter.
 		{'g', (*App).menuToggleGitPanel},
-		{'=', (*App).growGitPanel},
-		{'-', (*App).shrinkGitPanel},
+		{'=', (*App).growBottomPanel},
+		{'-', (*App).shrinkBottomPanel},
+		// '`' for the terminal — the key VS Code binds, minus the Ctrl.
+		// An open-but-unfocused panel grabs focus first, so the leader
+		// doubles as "jump back into the shell".
+		{'`', (*App).leaderTerminal},
 		// LSP trio: 'd' definition, 'i' info (hover), 'o' back "out" of
 		// the jump — 'b' was tempting for back but reads as "buffer" to
 		// vim hands, and the plan pinned 'o' from the start.
