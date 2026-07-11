@@ -670,6 +670,16 @@ func (a *App) openTreeContext(n *filetree.Node, x, y int) {
 	if n != a.tree.Root {
 		items = append(items, contextItem{label: "Rename", action: ctxRename})
 		items = append(items, contextItem{label: "Delete", action: ctxDelete})
+		// Copying the root is gated out with Rename/Delete — every
+		// possible paste destination is inside it, so the copy could
+		// never be used.
+		items = append(items, contextItem{label: "Copy", action: ctxCopy})
+	}
+	// Paste appears only once something has been copied — a permanently
+	// dimmed row would just be noise in a popup this small. The root is
+	// allowed: pasting into the project root is the common case.
+	if a.hasFileClip() {
+		items = append(items, contextItem{label: "Paste", action: ctxPaste})
 	}
 	// Zip works on files, folders, and the root alike — the archive
 	// is read-only on the source, so no root guard is needed.

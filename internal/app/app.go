@@ -216,6 +216,9 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Delete file", action: (*App).menuDelete, enabled: (*App).hasFileTab},
 			{action: (*App).menuRenameFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).renameFolderLabel},
 			{action: (*App).menuDeleteFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).deleteFolderLabel},
+			{label: "Copy file", action: (*App).menuCopyFile, enabled: (*App).hasFileTab},
+			{action: (*App).menuCopyFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).copyFolderLabel},
+			{action: (*App).menuPasteItem, enabled: (*App).hasFileClip, labelFor: (*App).pasteItemLabel},
 			{label: "Zip file", action: (*App).menuZipFile, enabled: (*App).hasFileTab},
 			{action: (*App).menuZipFolder, enabled: alwaysTrue, labelFor: (*App).zipFolderLabel},
 			{label: "Copy relative path", action: (*App).menuCopyRelativePath, enabled: (*App).hasFileTab},
@@ -326,7 +329,16 @@ type App struct {
 	// drag the splitter to change it within [minSidebarWidth, width-minEditorAfterDrag].
 	sidebarWidth int
 
-	clipBuf      string
+	clipBuf string
+	// fileClipPath is the absolute path armed by a Copy file/folder
+	// action; paste duplicates it under a collision-free name. Empty
+	// means nothing has been copied this session. See copypaste.go.
+	fileClipPath string
+	// clipKind records which clipboard (text selection vs file) was
+	// written most recently so Cmd+V pastes the right one —
+	// last-write-wins, like a system clipboard.
+	clipKind clipboardKind
+
 	statusMsg    string
 	statusUntil  time.Time
 	dragMode     string // "editor" while a drag-select is active.
@@ -640,6 +652,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleCustomActionDone(e)
 	case *zipDoneEvent:
 		a.handleZipDone(e)
+	case *pasteDoneEvent:
+		a.handlePasteDone(e)
 	case *gitCmdDoneEvent:
 		a.handleGitCmdDone(e)
 	case *gitPanelDiffEvent:
@@ -1093,6 +1107,24 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	// Any other key cancels a pending Esc so a stale half-tap doesn't
 	// surprise the user later.
 	a.lastEscape = time.Time{}
+
+	// Cmd+C / Cmd+V. Terminals speaking the kitty keyboard protocol
+	// (kitty, Ghostty, WezTerm, iTerm2 with CSI-u) deliver the Cmd/Super
+	// key as ModMeta; classic terminals swallow Cmd entirely, so these
+	// are a convenience layer — the ≡ menu and tree context menu remain
+	// the guaranteed paths, per the house rule. This is not a Ctrl
+	// shortcut: Cmd never collides with tmux prefixes or terminal flow
+	// control, which is what the no-Ctrl rule actually protects.
+	if ev.Key() == tcell.KeyRune && ev.Modifiers()&tcell.ModMeta != 0 {
+		switch ev.Rune() {
+		case 'c':
+			a.cmdCopy()
+			return
+		case 'v':
+			a.cmdPaste()
+			return
+		}
+	}
 
 	// While the menu is open, only the navigation keys do anything —
 	// editing keys are blocked, but Down/Up move the highlight and Enter
@@ -1806,6 +1838,7 @@ func (a *App) copySelection() {
 	}
 	txt := tab.SelectionText()
 	a.clipBuf = txt
+	a.clipKind = clipText
 	if err := clipboard.CopyToSystem(txt); err != nil {
 		a.flash("Copied (system clipboard unavailable)")
 		return

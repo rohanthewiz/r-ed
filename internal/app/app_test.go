@@ -183,10 +183,10 @@ func TestMenuButtonRect(t *testing.T) {
 // to (0,0) when the window is too small to fit it.
 func TestMenuModalRect_Centered(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	// The menu (42 rows) outgrew the 40-row default sim screen; give it
+	// The menu (52 rows) outgrew the 40-row default sim screen; give it
 	// vertical room so "centered" is well-defined — the too-small case
 	// is pinned separately by TestMenuModalRect_ClampsTinyWindow.
-	a.height = 50
+	a.height = 60
 	x, y, w, h := a.menuModalRect()
 	_, _, expectedH := a.menuLayout()
 	if w != modalWidth || h != expectedH {
@@ -1634,13 +1634,13 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 49 {
-		t.Errorf("modalHeight = %d, want 49", h)
+	if h != 52 {
+		t.Errorf("modalHeight = %d, want 52", h)
 	}
-	if got := len(items); got != 37 {
-		t.Errorf("item count = %d, want 37 built-ins", got)
+	if got := len(items); got != 40 {
+		t.Errorf("item count = %d, want 40 built-ins", got)
 	}
-	wantDiv := []int{2, 7, 11, 15, 25, 29, 39, 44, 46}
+	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 47, 49}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1699,8 +1699,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 52 { // 49 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 52", h)
+	if h != 55 { // 52 + 2 items + 1 divider
+		t.Errorf("modalHeight = %d, want 55", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.
@@ -2154,7 +2154,7 @@ func TestMenuModalRect_ClampsToWindowHeight(t *testing.T) {
 	}
 
 	// A tall window fits everything — no scroll range at all.
-	a.height = 50
+	a.height = 60
 	if got := a.menuMaxScroll(); got != 0 {
 		t.Fatalf("tall-window menuMaxScroll = %d, want 0", got)
 	}
