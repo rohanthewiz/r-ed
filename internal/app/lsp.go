@@ -52,11 +52,6 @@ import (
 // that diagnostics feel live when the user pauses.
 const lspSyncDebounce = 300 * time.Millisecond
 
-// lspNavStackMax caps the back-navigation stack. Fifty jumps of
-// history is more than anyone retraces; the cap just stops a long
-// session from growing the slice forever.
-const lspNavStackMax = 50
-
 // lspServerBinary is the language server the editor knows how to run.
 // Go-only for now — the lspHandles/languageID seams are where a second
 // language would plug in.
@@ -75,13 +70,6 @@ type lspConn interface {
 	Close()
 }
 
-// navLoc is one entry of the back-navigation stack: where the cursor
-// was before a go-to-definition jump.
-type navLoc struct {
-	path string
-	pos  editor.Position
-}
-
 // lspState is everything the LSP integration remembers, owned by App
 // and mutated only on the main loop. Maps are lazily created so tests
 // that assemble an App by hand need no extra setup.
@@ -98,8 +86,6 @@ type lspState struct {
 	// the workspace, not just open ones; keeping them all costs little
 	// and means a file opened later shows its problems immediately.
 	diags map[string][]lsp.Diagnostic
-
-	navStack []navLoc
 }
 
 // -----------------------------------------------------------------------------
@@ -465,7 +451,7 @@ func editorPosFor(t *editor.Tab, p lsp.Position) editor.Position {
 }
 
 // -----------------------------------------------------------------------------
-// Go-to-definition + back navigation
+// Go-to-definition
 // -----------------------------------------------------------------------------
 
 // hasLSPActions is the menu predicate for definition / hover: the
@@ -474,9 +460,6 @@ func (a *App) hasLSPActions() bool {
 	t := a.activeTabPtr()
 	return t != nil && t.Path != "" && !t.IsImage() && lspHandles(t.Path) && a.lspReady()
 }
-
-// hasNavBack is the menu predicate for Jump back.
-func (a *App) hasNavBack() bool { return len(a.lsp.navStack) > 0 }
 
 // menuGoToDefinition fires an async definition request for the symbol
 // under the cursor. The result lands as an lspDefinitionEvent.
@@ -500,7 +483,11 @@ func (a *App) menuGoToDefinition() {
 }
 
 // handleLSPDefinition lands a definition response: jump to the first
-// location, recording where we came from so Esc-o can retrace.
+// location, recording where we came from in the app-wide navigation
+// history so Go back (Esc-o / Alt+Left) can retrace. The open runs
+// suppressed and the origin is recorded explicitly with the request's
+// exact cursor position — a same-file jump moves only the cursor, which
+// openFile's path-change recording would miss.
 func (a *App) handleLSPDefinition(e *lspDefinitionEvent) {
 	if e.err != nil || len(e.locs) == 0 {
 		a.flash("No definition found")
@@ -511,39 +498,15 @@ func (a *App) handleLSPDefinition(e *lspDefinitionEvent) {
 		a.flash("Definition is not in a plain file")
 		return
 	}
+	a.nav.suppress = true
 	a.openFile(target)
+	a.nav.suppress = false
 	t := a.activeTabPtr()
 	if t == nil || t.Path != target {
 		return // openFile failed and flashed its own error
 	}
-	a.pushNav(navLoc{path: e.fromPath, pos: e.fromPos})
+	a.recordNav(navLoc{path: e.fromPath, pos: e.fromPos})
 	t.MoveCursorTo(editorPosFor(t, e.locs[0].Range.Start), false)
-}
-
-// pushNav records a jump origin, capping the stack so it can't grow
-// without bound over a long session.
-func (a *App) pushNav(loc navLoc) {
-	a.lsp.navStack = append(a.lsp.navStack, loc)
-	if len(a.lsp.navStack) > lspNavStackMax {
-		a.lsp.navStack = a.lsp.navStack[len(a.lsp.navStack)-lspNavStackMax:]
-	}
-}
-
-// menuJumpBack pops the navigation stack and returns the cursor to
-// where the last definition jump started.
-func (a *App) menuJumpBack() {
-	a.closeMenu()
-	n := len(a.lsp.navStack)
-	if n == 0 {
-		a.flash("Nowhere to jump back to")
-		return
-	}
-	loc := a.lsp.navStack[n-1]
-	a.lsp.navStack = a.lsp.navStack[:n-1]
-	a.openFile(loc.path)
-	if t := a.activeTabPtr(); t != nil && t.Path == loc.path {
-		t.MoveCursorTo(loc.pos, false)
-	}
 }
 
 // -----------------------------------------------------------------------------

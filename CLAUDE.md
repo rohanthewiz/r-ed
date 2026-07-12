@@ -62,6 +62,7 @@ internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
+internal/app/nav.go           Back/forward file-navigation history (Esc-o/O, Alt+←/→)
 internal/app/terminal.go      Embedded grsh terminal panel (REPL strip, not a PTY)
 internal/format/              format.json load, trust store, builtin goimports / gopls imports / gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
@@ -176,13 +177,35 @@ framework dependency. House rules it must keep obeying:
   silently diagnoses stale text.
 - Diagnostics are just another `DecorationSource` (registered after
   the git source so the diag gutter dot outranks the git mark).
-- Leaders: Esc-d definition, Esc-i hover, Esc-o jump back.
+- Leaders: Esc-d definition, Esc-i hover. Definition jumps record
+  into the app-wide navigation history (nav.go) — there is no
+  LSP-private jump stack anymore.
 - **Absolute paths only**: `New()` absolutizes rootDir and `openFile`
   absolutizes tab paths. A relative root produces a malformed rootUri
   and gopls then publishes diagnostics keyed by absolute paths that
   never match the tabs — the "gopls installed but no squiggles" bug.
 - Tests kill the integration (`a.lsp.dead = true` in newTestApp) so
   openFile can't spawn a real gopls; LSP tests inject `fakeLSPConn`.
+
+### Navigation history (app/nav.go)
+Browser-style Go back / Go forward across files (≡ menu, Esc-o / Esc-O,
+Alt+Left / Alt+Right). Recording happens CENTRALLY: openFile records the
+departure point on its success paths, and tabBarClick (which bypasses
+openFile) records its own switches — new navigation surfaces get history
+for free by calling openFile, so don't add per-surface push calls. The
+`nav.suppress` flag is set while navBack/navForward retrace so the
+retrace itself never records (removing that corrupts the trail into a
+two-entry bounce). Any fresh navigation clears the forward stack, same
+rule as a browser. LSP definition jumps record explicitly with the
+request's origin position (a same-file jump moves only the cursor, which
+path-change-only recording would miss) and open with suppress on.
+
+### Menu shortcut hints
+`menuItemDef.shortcut` is a display-only accelerator column rendered
+right-aligned and muted in the ≡ menu ("esc s", "alt+←"). Dispatch
+still lives in the leader table / handleKey — when adding or rebinding
+a key, update both or the menu lies. Rows without a binding leave it
+empty; drawMenu skips the hint when a long label would collide.
 
 ### Format-on-save precedence + builtin Go pass (app/format.go)
 `runFormatOnSave(idx, quiet)` routes: project `format.json` entry

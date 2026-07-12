@@ -398,16 +398,21 @@ func TestDefinitionJumpAndBack(t *testing.T) {
 	} else if tab.Cursor != (editor.Position{Line: 2, Col: 5}) {
 		t.Errorf("cursor = %+v, want line 2 col 5", tab.Cursor)
 	}
-	if len(a.lsp.navStack) != 1 {
+	if len(a.nav.back) != 1 {
 		t.Fatal("origin not pushed on nav stack")
 	}
 
-	a.menuJumpBack()
+	a.menuNavBack()
 	if tab := a.activeTabPtr(); tab.Path != goPath || tab.Cursor != origin {
 		t.Errorf("jump back landed at %s %+v, want %s %+v", tab.Path, tab.Cursor, goPath, origin)
 	}
-	if len(a.lsp.navStack) != 0 {
+	if len(a.nav.back) != 0 {
 		t.Error("nav stack should be empty after jump back")
+	}
+	// Retracing must arm the forward stack — the jump target is now one
+	// Go forward away.
+	if len(a.nav.fwd) != 1 || a.nav.fwd[0].path != otherPath {
+		t.Errorf("fwd stack = %+v, want the definition target", a.nav.fwd)
 	}
 }
 
@@ -421,7 +426,7 @@ func TestDefinitionNoResult(t *testing.T) {
 	if a.statusMsg != "No definition found" {
 		t.Errorf("flash = %q", a.statusMsg)
 	}
-	if len(a.lsp.navStack) != 0 {
+	if len(a.nav.back) != 0 {
 		t.Error("failed lookup must not push the nav stack")
 	}
 }
@@ -449,7 +454,7 @@ func TestMenuGoToDefinitionAsync(t *testing.T) {
 			t.Fatal("definition event never arrived")
 		}
 	}
-	if len(a.lsp.navStack) != 1 {
+	if len(a.nav.back) != 1 {
 		t.Error("async jump should record its origin")
 	}
 }
@@ -525,34 +530,19 @@ func TestLSPPredicates(t *testing.T) {
 		t.Error("dead server — actions should be disabled")
 	}
 	if a.hasNavBack() {
-		t.Error("empty stack — Jump back should be disabled")
+		t.Error("empty stack — Go back should be disabled")
 	}
-	a.pushNav(navLoc{path: goPath})
+	a.recordNav(navLoc{path: goPath})
 	if !a.hasNavBack() {
-		t.Error("non-empty stack — Jump back should be enabled")
+		t.Error("non-empty stack — Go back should be enabled")
 	}
 }
 
-// TestPushNavCap pins the stack cap: overflow drops the oldest
-// entries, not the newest.
-func TestPushNavCap(t *testing.T) {
-	a, _, _ := newLSPTestApp(t)
-	for i := 0; i < lspNavStackMax+10; i++ {
-		a.pushNav(navLoc{pos: editor.Position{Line: i}})
-	}
-	if len(a.lsp.navStack) != lspNavStackMax {
-		t.Fatalf("stack len = %d, want %d", len(a.lsp.navStack), lspNavStackMax)
-	}
-	if got := a.lsp.navStack[len(a.lsp.navStack)-1].pos.Line; got != lspNavStackMax+9 {
-		t.Errorf("newest entry line = %d, want %d", got, lspNavStackMax+9)
-	}
-}
-
-// TestLSPLeaderBindings pins the three new leader keys onto their
-// actions by behavior: Esc-o with history retraces the jump (the
-// menu-method equivalence the other leaders are tested by).
+// TestLSPLeaderBindings pins the LSP leader keys onto their actions by
+// existence (the menu-method equivalence the other leaders are tested
+// by). The navigation leaders o/O are pinned in nav_test.go.
 func TestLSPLeaderBindings(t *testing.T) {
-	for _, key := range []rune{'d', 'i', 'o'} {
+	for _, key := range []rune{'d', 'i'} {
 		if leaderActionFor(key) == nil {
 			t.Errorf("leader %q not bound", key)
 		}
@@ -563,7 +553,7 @@ func TestLSPLeaderBindings(t *testing.T) {
 // reshuffle can't silently drop them.
 func TestMenuLSPRows(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	for _, label := range []string{"Go to definition", "Hover info", "Jump back"} {
+	for _, label := range []string{"Go to definition", "Hover info"} {
 		menuItemByLabel(t, a, label) // fails the test if missing
 	}
 }

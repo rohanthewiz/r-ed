@@ -153,8 +153,15 @@ type clickRecord struct {
 // labelFor is an optional dynamic-label hook: when non-nil, drawMenu calls
 // it instead of using the static label string. Used by toggle-style rows
 // whose label depends on app state ("Show / Hide file explorer").
+//
+// shortcut is the row's keyboard binding rendered right-aligned in the
+// row, muted, like a GUI menu's accelerator column ("esc s", "alt+←").
+// Purely informational — the actual dispatch lives in the leader table
+// and handleKey; keep the two in sync when rebinding. Empty means the
+// action is menu/mouse-only and the column stays blank.
 type menuItemDef struct {
 	label    string
+	shortcut string
 	relY     int
 	action   func(*App)
 	enabled  func(*App) bool
@@ -174,9 +181,9 @@ func builtinMenuGroups() [][]menuItemDef {
 	return [][]menuItemDef{
 		// Tab actions
 		{
-			{label: "Save", action: (*App).menuSave, enabled: (*App).hasSavableTab},
+			{label: "Save", shortcut: "esc s", action: (*App).menuSave, enabled: (*App).hasSavableTab},
 			{label: "Save & close tab", action: (*App).menuSaveAndClose, enabled: (*App).hasSavableTab},
-			{label: "Close tab", action: (*App).menuClose, enabled: (*App).hasTab},
+			{label: "Close tab", shortcut: "esc w", action: (*App).menuClose, enabled: (*App).hasTab},
 			{action: (*App).menuToggleAutoSave, enabled: alwaysTrue, labelFor: (*App).autoSaveToggleLabel},
 		},
 		// View toggles. Deliberately the second group: the menu outgrows
@@ -184,43 +191,48 @@ func builtinMenuGroups() [][]menuItemDef {
 		// is effectively hidden — and Show terminal is reached for far
 		// too often to bury. Keep these rows above the fold.
 		{
-			{action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
-			{action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
+			{shortcut: "esc t", action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
+			{shortcut: "esc `", action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
 			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
 		},
 		// History
 		{
-			{label: "Undo", action: (*App).menuUndo, enabled: (*App).hasUndo},
-			{label: "Redo", action: (*App).menuRedo, enabled: (*App).hasRedo},
+			{label: "Undo", shortcut: "esc u", action: (*App).menuUndo, enabled: (*App).hasUndo},
+			{label: "Redo", shortcut: "esc r", action: (*App).menuRedo, enabled: (*App).hasRedo},
 			{label: "Revert file", action: (*App).menuRevert, enabled: (*App).hasRevert},
 		},
 		// Search
 		{
-			{label: paletteMenuLabel, action: (*App).menuCommandPalette, enabled: alwaysTrue},
-			{label: "Find in file", action: (*App).menuFind, enabled: (*App).hasFindable},
-			{label: "Find file in project", action: (*App).menuFindFile, enabled: (*App).hasFinder},
+			{label: paletteMenuLabel, shortcut: "esc a", action: (*App).menuCommandPalette, enabled: alwaysTrue},
+			{label: "Find in file", shortcut: "esc f", action: (*App).menuFind, enabled: (*App).hasFindable},
+			{label: "Find file in project", shortcut: "esc p", action: (*App).menuFindFile, enabled: (*App).hasFinder},
+		},
+		// Navigation — browser-style back/forward through the file
+		// history (tree, tabs, finder, and definition jumps all feed it).
+		{
+			{label: "Go back", shortcut: "esc o / alt+←", action: (*App).menuNavBack, enabled: (*App).hasNavBack},
+			{label: "Go forward", shortcut: "esc O / alt+→", action: (*App).menuNavForward, enabled: (*App).hasNavForward},
 		},
 		// Git
 		{
-			{label: "Next change", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
-			{label: "Previous change", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
+			{label: "Next change", shortcut: "esc h", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
+			{label: "Previous change", shortcut: "esc H", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
 			{label: "Stage file", action: (*App).menuGitStageFile, enabled: (*App).hasStageableFile},
 			{label: "Unstage file", action: (*App).menuGitUnstageFile, enabled: (*App).hasUnstageableFile},
 			{label: "Commit staged", action: (*App).menuGitCommit, enabled: (*App).hasGitStaged},
 			{label: "Stash changes", action: (*App).menuGitStash, enabled: (*App).hasGitChanges},
 			{label: "Pop stash", action: (*App).menuGitStashPop, enabled: (*App).hasGitStash},
 			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
-			{action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
+			{shortcut: "esc g", action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
 		},
 		// Code intelligence (LSP-backed; rows dim when no server)
 		{
-			{label: "Go to definition", action: (*App).menuGoToDefinition, enabled: (*App).hasLSPActions},
-			{label: "Hover info", action: (*App).menuHoverInfo, enabled: (*App).hasLSPActions},
-			{label: "Jump back", action: (*App).menuJumpBack, enabled: (*App).hasNavBack},
+			{label: "Go to definition", shortcut: "esc d", action: (*App).menuGoToDefinition, enabled: (*App).hasLSPActions},
+			{label: "Hover info", shortcut: "esc i", action: (*App).menuHoverInfo, enabled: (*App).hasLSPActions},
 		},
 		// File actions
 		{
-			{action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
+			{shortcut: "esc n", action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
 			{label: "Rename file", action: (*App).menuRename, enabled: (*App).hasFileTab},
 			{label: "Delete file", action: (*App).menuDelete, enabled: (*App).hasFileTab},
 			{action: (*App).menuRenameFolder, enabled: (*App).hasActiveSubfolder, labelFor: (*App).renameFolderLabel},
@@ -235,17 +247,17 @@ func builtinMenuGroups() [][]menuItemDef {
 		},
 		// Clipboard + line editing
 		{
-			{label: "Copy selection", action: (*App).menuCopy, enabled: (*App).hasSelection},
+			{label: "Copy selection", shortcut: "cmd+c", action: (*App).menuCopy, enabled: (*App).hasSelection},
 			{label: "Cut selection", action: (*App).menuCut, enabled: (*App).hasSelection},
-			{label: "Paste", action: (*App).menuPaste, enabled: (*App).hasClipboard},
-			{label: "Toggle line comment", action: (*App).menuToggleLineComment, enabled: (*App).hasCommentableTab},
-			{label: "Duplicate line", action: (*App).menuDuplicateLines, enabled: (*App).hasEditableTab},
-			{label: "Move line up", action: (*App).menuMoveLinesUp, enabled: (*App).hasEditableTab},
-			{label: "Move line down", action: (*App).menuMoveLinesDown, enabled: (*App).hasEditableTab},
+			{label: "Paste", shortcut: "cmd+v", action: (*App).menuPaste, enabled: (*App).hasClipboard},
+			{label: "Toggle line comment", shortcut: "esc /", action: (*App).menuToggleLineComment, enabled: (*App).hasCommentableTab},
+			{label: "Duplicate line", shortcut: "ctrl+d", action: (*App).menuDuplicateLines, enabled: (*App).hasEditableTab},
+			{label: "Move line up", shortcut: "alt+↑", action: (*App).menuMoveLinesUp, enabled: (*App).hasEditableTab},
+			{label: "Move line down", shortcut: "alt+↓", action: (*App).menuMoveLinesDown, enabled: (*App).hasEditableTab},
 		},
 		// Quit
 		{
-			{label: "Quit editor", action: (*App).menuQuit, enabled: alwaysTrue},
+			{label: "Quit editor", shortcut: "esc q", action: (*App).menuQuit, enabled: alwaysTrue},
 		},
 	}
 }
@@ -458,10 +470,15 @@ type App struct {
 	term termPanelState
 
 	// lsp holds the language-server integration state: the connection,
-	// per-document sync bookkeeping, diagnostics, and the definition
-	// back-navigation stack. Mutated only on the main loop; background
-	// work posts lsp*Events. See lsp.go.
+	// per-document sync bookkeeping, and diagnostics. Mutated only on
+	// the main loop; background work posts lsp*Events. See lsp.go.
 	lsp lspState
+
+	// nav is the app-wide file-navigation history (Go back / Go
+	// forward). Recorded centrally in openFile and tabBarClick so every
+	// navigation surface — tree, tabs, finder, go-to-definition — feeds
+	// the same trail. See nav.go.
+	nav navState
 
 	// customActions is the list of user-configured shell-out actions
 	// loaded from ~/.config/r-ed/actions.json at startup. When
@@ -1273,6 +1290,22 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		return
 	}
 
+	// Alt+Left / Alt+Right walk the file-navigation history — the arrow
+	// twins of Esc-o / Esc-O. Handled up here rather than in the editing
+	// switch below so history stays reachable from image tabs, from the
+	// focused terminal, and with no tab open at all. tmux delivers
+	// Esc-prefixed arrows folded into ModAlt, same as Alt+Up/Down.
+	if ev.Modifiers()&tcell.ModAlt != 0 {
+		switch ev.Key() {
+		case tcell.KeyLeft:
+			a.navBack()
+			return
+		case tcell.KeyRight:
+			a.navForward()
+			return
+		}
+	}
+
 	// The focused terminal panel owns everything below this point. The
 	// branch sits AFTER the Esc / leader / menu blocks on purpose: the
 	// global command gestures keep working from inside the terminal
@@ -1659,6 +1692,14 @@ func (a *App) tabBarClick(x, _ int) {
 				a.requestCloseTab(r.Index)
 				return
 			}
+			// A tab-bar switch is a navigation, but it bypasses
+			// openFile (the tab is already open), so it records into
+			// the history itself. Same-tab clicks aren't navigation.
+			if r.Index != a.activeTab && r.Index < len(a.tabs) {
+				if from, ok := a.currentNavLoc(); ok && from.path != a.tabs[r.Index].Path {
+					a.recordNav(from)
+				}
+			}
 			a.activeTab = r.Index
 			return
 		}
@@ -1888,9 +1929,19 @@ func (a *App) openFile(path string) {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
+	// Snapshot the departure point for the navigation history up front,
+	// but record it only on the success paths below — a failed open
+	// moves nothing, and a recorded entry would then make Go back a
+	// no-op press. Same-path opens (re-clicking the active file in the
+	// tree) aren't navigation, so they don't record.
+	from, hasFrom := a.currentNavLoc()
+	hasFrom = hasFrom && from.path != path
 	a.setActiveFolder(filepath.Dir(path))
 	for i, t := range a.tabs {
 		if t.Path == path {
+			if hasFrom {
+				a.recordNav(from)
+			}
 			a.activeTab = i
 			return
 		}
@@ -1899,6 +1950,9 @@ func (a *App) openFile(path string) {
 	if err != nil {
 		a.flash(fmt.Sprintf("Error: %v", err))
 		return
+	}
+	if hasFrom {
+		a.recordNav(from)
 	}
 	// Wire the diff gutter in and kick off the first diff so marks
 	// appear as soon as the async result lands, not at the next tick.
@@ -2941,6 +2995,21 @@ func (a *App) drawMenu() {
 		}
 		drawAt(a.screen, mx+2, cy, "▸", chevStyle)
 		drawAt(a.screen, mx+4, cy, label, labelStyle)
+		// Shortcut hint, right-aligned like a GUI menu's accelerator
+		// column. Always muted — the label carries the row's state
+		// (enabled / hovered); the hint is a whisper either way — but
+		// on the hover background so it doesn't punch a hole in the
+		// highlight bar. Skipped when a long label would collide.
+		if item.shortcut != "" {
+			scX := mx + mw - 2 - len([]rune(item.shortcut))
+			if scX > mx+4+len([]rune(label))+1 {
+				scStyle := mutedStyle
+				if hovered {
+					scStyle = tcell.StyleDefault.Background(hoverBg).Foreground(a.theme.Muted)
+				}
+				drawAt(a.screen, scX, cy, item.shortcut, scStyle)
+			}
+		}
 	}
 
 	// Scroll indicators: ▲ on the pinned title divider when rows are

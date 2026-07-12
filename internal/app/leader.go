@@ -67,12 +67,15 @@ func leaderBindings() []leaderBinding {
 		// An open-but-unfocused panel grabs focus first, so the leader
 		// doubles as "jump back into the shell".
 		{'`', (*App).leaderTerminal},
-		// LSP trio: 'd' definition, 'i' info (hover), 'o' back "out" of
-		// the jump — 'b' was tempting for back but reads as "buffer" to
-		// vim hands, and the plan pinned 'o' from the start.
+		// LSP pair: 'd' definition, 'i' info (hover).
 		{'d', (*App).menuGoToDefinition},
 		{'i', (*App).menuHoverInfo},
-		{'o', (*App).menuJumpBack},
+		// Navigation history: 'o' back "out" of a jump — 'b' was
+		// tempting but reads as "buffer" to vim hands. Shifted variant
+		// walks forward again, mirroring the h/H hunk convention.
+		// Alt+Left / Alt+Right (handleKey) are the arrow twins.
+		{'o', (*App).menuNavBack},
+		{'O', (*App).menuNavForward},
 	}
 }
 
