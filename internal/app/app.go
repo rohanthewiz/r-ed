@@ -224,17 +224,21 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Copy relative path", action: (*App).menuCopyRelativePath, enabled: (*App).hasFileTab},
 			{label: "Copy absolute path", action: (*App).menuCopyAbsolutePath, enabled: (*App).hasFileTab},
 		},
-		// Clipboard
+		// Clipboard + line editing
 		{
 			{label: "Copy selection", action: (*App).menuCopy, enabled: (*App).hasSelection},
 			{label: "Cut selection", action: (*App).menuCut, enabled: (*App).hasSelection},
 			{label: "Paste", action: (*App).menuPaste, enabled: (*App).hasClipboard},
 			{label: "Toggle line comment", action: (*App).menuToggleLineComment, enabled: (*App).hasCommentableTab},
+			{label: "Duplicate line", action: (*App).menuDuplicateLines, enabled: (*App).hasEditableTab},
+			{label: "Move line up", action: (*App).menuMoveLinesUp, enabled: (*App).hasEditableTab},
+			{label: "Move line down", action: (*App).menuMoveLinesDown, enabled: (*App).hasEditableTab},
 		},
 		// View toggle
 		{
 			{action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
 			{action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
+			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
 		},
 		// Quit
 		{
@@ -324,6 +328,13 @@ type App struct {
 	// sidebarShown controls whether the file explorer panel is visible.
 	// When false the editor and tab bar fill the whole window.
 	sidebarShown bool
+
+	// termDockLeft selects the alternate layout: the terminal panel
+	// docks as a vertical strip on the LEFT edge and the file tree
+	// flips to the RIGHT edge. False is the classic layout (tree
+	// left, terminal a bottom strip). Persisted via userconfig
+	// ("termdock"), toggled from the ≡ menu.
+	termDockLeft bool
 
 	// sidebarWidth is the live width of the file-explorer block (file tree
 	// + 1-cell splitter on its right edge), in screen cells. The user can
@@ -466,6 +477,17 @@ type App struct {
 // New initialises the screen and mouse, builds the file tree at rootDir,
 // and returns an App ready to Run.
 func New(rootDir string) (*App, error) {
+	// Anchor the workspace to an absolute path up front. Everything
+	// derived from rootDir inherits it — tree node paths, tab paths,
+	// git invocations — and two subsystems break outright on relative
+	// paths: the LSP layer (a rootUri/didOpen built from "." is a
+	// malformed file:// URI, and gopls then publishes diagnostics
+	// keyed by absolute paths that never match the relative tab
+	// paths), and anything that outlives a cwd change (the embedded
+	// grsh terminal's `cd` chdirs the whole process by design).
+	if abs, err := filepath.Abs(rootDir); err == nil {
+		rootDir = abs
+	}
 	scr, err := tcell.NewScreen()
 	if err != nil {
 		return nil, err
@@ -543,6 +565,7 @@ func (a *App) loadUserConfig() {
 		a.tree.IconsEnabled = icons.Resolve(cfg.Icons)
 	}
 	a.autoSaveEnabled = cfg.AutoSave
+	a.termDockLeft = cfg.TermDock == userconfig.TermDockLeft
 }
 
 // refreshGitStatus re-runs `git status --porcelain` against the project
@@ -866,35 +889,84 @@ func (a *App) sidebarW() int {
 	return a.sidebarWidth
 }
 
+// leftBlockW is how many columns the left-docked block consumes: the
+// sidebar in the classic layout, the terminal strip (when open) in
+// the flipped layout. The tab bar, editor, find bar, and bottom
+// panels all start to the right of this.
+func (a *App) leftBlockW() int {
+	if a.termDockLeft {
+		return a.termStripW()
+	}
+	return a.sidebarW()
+}
+
+// rightBlockW mirrors leftBlockW for the right edge: zero in the
+// classic layout, the sidebar block in the flipped one.
+func (a *App) rightBlockW() int {
+	if a.termDockLeft {
+		return a.sidebarW()
+	}
+	return 0
+}
+
 // sidebarRect returns the file tree's render rectangle (one column
-// narrower than the sidebar block — the rightmost column belongs to the
-// resize splitter). Zero width when the sidebar is hidden.
+// narrower than the sidebar block — the column nearest the editor
+// belongs to the resize splitter). Zero width when hidden. In the
+// flipped layout the block hugs the right edge with the splitter on
+// its left.
 func (a *App) sidebarRect() (x, y, w, h int) {
 	sw := a.sidebarW()
 	if sw <= 0 {
 		return 0, 0, 0, 0
 	}
+	if a.termDockLeft {
+		return a.width - sw + 1, 0, sw - 1, a.height - 1
+	}
 	return 0, 0, sw - 1, a.height - 1
 }
 
-// splitterX returns the x coordinate of the resize splitter column, or -1
-// when the sidebar is hidden (no splitter to draw or click).
+// splitterX returns the x coordinate of the sidebar's resize splitter
+// column, or -1 when the sidebar is hidden (no splitter to draw or
+// click). Classic layout: the block's rightmost column; flipped: its
+// leftmost.
 func (a *App) splitterX() int {
 	if !a.sidebarShown {
 		return -1
 	}
+	if a.termDockLeft {
+		return a.width - a.sidebarWidth
+	}
 	return a.sidebarWidth - 1
+}
+
+// inSidebarBlock reports whether column x falls inside the sidebar
+// block (tree + splitter), whichever edge it is docked to. The click
+// and scroll routers use this instead of comparing against raw widths
+// so they stay layout-agnostic.
+func (a *App) inSidebarBlock(x int) bool {
+	sw := a.sidebarW()
+	if sw <= 0 {
+		return false
+	}
+	if a.termDockLeft {
+		return x >= a.width-sw
+	}
+	return x < sw
 }
 
 // resizeSidebar applies the user's desired sidebar width while clamping it
 // to a sensible range — the file tree stays wide enough to read names and
-// the editor keeps at least minEditorAfterDrag columns. Tiny windows that
-// can't satisfy both fall back to the minimum and let the editor shrink.
+// the editor keeps at least minEditorAfterDrag columns (after whatever a
+// left-docked terminal strip already claimed). Tiny windows that can't
+// satisfy both fall back to the minimum and let the editor shrink.
 func (a *App) resizeSidebar(target int) {
 	if target < minSidebarWidth {
 		target = minSidebarWidth
 	}
 	max := a.width - minEditorAfterDrag
+	if a.termDockLeft {
+		max -= a.termStripW()
+	}
 	if max < minSidebarWidth {
 		max = minSidebarWidth
 	}
@@ -904,19 +976,22 @@ func (a *App) resizeSidebar(target int) {
 	a.sidebarWidth = target
 }
 
-// tabBarRect returns the tab bar's screen rectangle (one row tall).
+// tabBarRect returns the tab bar's screen rectangle (one row tall),
+// spanning the editor column band between the docked blocks.
 func (a *App) tabBarRect() (x, y, w, h int) {
-	sw := a.sidebarW()
-	return sw, 0, a.width - sw, 1
+	lw := a.leftBlockW()
+	return lw, 0, a.width - lw - a.rightBlockW(), 1
 }
 
-// editorRect returns the editor body's screen rectangle (everything to the
-// right of the sidebar, between the tab bar and the status bar). When the
-// find bar is open, one row is taken out of the bottom — the bar is
-// pinned directly above the status bar. The git panel takes its rows
-// out of the bottom too, stacking above the find bar.
+// editorRect returns the editor body's screen rectangle — the column
+// band between the docked side blocks, between the tab bar and the
+// status bar. When the find bar is open, one row is taken out of the
+// bottom — the bar is pinned directly above the status bar. The git
+// panel takes its rows out of the bottom too, stacking above the find
+// bar; a bottom-docked terminal does the same, while a left-docked one
+// costs columns instead (via leftBlockW).
 func (a *App) editorRect() (x, y, w, h int) {
-	sw := a.sidebarW()
+	lw := a.leftBlockW()
 	h = a.height - 2
 	if a.findOpen {
 		h -= findBarHeight
@@ -924,10 +999,10 @@ func (a *App) editorRect() (x, y, w, h int) {
 	if a.gitPanel.open {
 		h -= a.gitPanelHeight()
 	}
-	if a.term.open {
+	if a.term.open && !a.termDockLeft {
 		h -= a.termPanelHeight()
 	}
-	return sw, 1, a.width - sw, h
+	return lw, 1, a.width - lw - a.rightBlockW(), h
 }
 
 // statusRect returns the status bar's screen rectangle (full-width bottom row).
@@ -944,9 +1019,9 @@ func (a *App) editorSize() (int, int) {
 
 // menuButtonRect returns the on-screen rectangle of the ≡ icon in the tab
 // bar. Click hit-tests in tabBarClick consult this directly. When the
-// sidebar is hidden the icon shifts left to fill the corner.
+// left block is absent the icon shifts left to fill the corner.
 func (a *App) menuButtonRect() (x, y, w, h int) {
-	return a.sidebarW(), 0, menuButtonWidth, 1
+	return a.leftBlockW(), 0, menuButtonWidth, 1
 }
 
 // menuPinnedRows is the fixed header of the action modal — top border,
@@ -1092,6 +1167,22 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		// A lone Esc that isn't followed by a leader binding within the
 		// window is intentionally a no-op so the key still feels harmless
 		// to mash.
+		//
+		// Alt+Esc IS a double-Esc. tmux holds a lone ESC for its
+		// escape-time (500ms by default) waiting to disambiguate, so a
+		// fast double-tap reaches us as one buffered "\x1b\x1b" write —
+		// which tcell's parser folds into a single KeyEsc event carrying
+		// ModAlt. Without this branch the menu is unreachable by
+		// keyboard inside tmux, the editor's primary habitat.
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			if a.menuOpen {
+				a.closeMenu()
+			} else {
+				a.openMenu()
+			}
+			a.lastEscape = time.Time{}
+			return
+		}
 		if a.menuOpen {
 			a.closeMenu()
 			a.lastEscape = time.Time{}
@@ -1117,6 +1208,20 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 				action(a)
 				return
 			}
+		}
+	}
+	// Alt+<leader rune> is an Esc-leader too, for the same tmux reason
+	// as Alt+Esc above: "Esc, s" typed inside the escape-time window
+	// reaches us as one "\x1bs" write, which tcell reports as Alt+s
+	// with no separate Esc event to arm lastEscape. Unbound Alt runes
+	// still fall through so Option-as-Meta typists lose nothing they
+	// had before (a bound rune firing an action beats it inserting a
+	// literal character mid-code).
+	if ev.Key() == tcell.KeyRune && ev.Modifiers()&tcell.ModAlt != 0 {
+		if action := leaderActionFor(ev.Rune()); action != nil {
+			a.lastEscape = time.Time{}
+			action(a)
+			return
 		}
 	}
 	// Any other key cancels a pending Esc so a stale half-tap doesn't
@@ -1189,9 +1294,26 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 
 	switch ev.Key() {
 	case tcell.KeyUp:
+		// Alt+Up drags the current line (or selected block) up a row.
+		// tmux may deliver the gesture as ESC-prefixed arrows, which
+		// tcell folds into ModAlt the same way as the leader keys.
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			tab.MoveLines(-1)
+			return
+		}
 		tab.MoveCursor(-1, 0, extend)
 	case tcell.KeyDown:
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			tab.MoveLines(1)
+			return
+		}
 		tab.MoveCursor(1, 0, extend)
+	case tcell.KeyCtrlD:
+		// The one deliberate exception to the no-Ctrl rule: Ctrl-D
+		// (duplicate line) doesn't collide with terminal flow control
+		// (Ctrl-S/Q), the default tmux prefix (Ctrl-B), or zellij's
+		// binds, and shell EOF semantics don't apply in raw mode.
+		tab.DuplicateLines()
 	case tcell.KeyLeft:
 		tab.MoveCursor(0, -1, extend)
 	case tcell.KeyRight:
@@ -1325,9 +1447,21 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 	}
 
 	// Sidebar resize drag: keep the splitter glued to the mouse x so the
-	// panel reshapes live as the user drags.
+	// panel reshapes live as the user drags. The width the mouse implies
+	// depends on which edge the block hugs.
 	if leftDown && a.dragMode == "sidebar" {
-		a.resizeSidebar(x + 1)
+		if a.termDockLeft {
+			a.resizeSidebar(a.width - x)
+		} else {
+			a.resizeSidebar(x + 1)
+		}
+		return
+	}
+
+	// Left-docked terminal resize drag: same gesture as the sidebar
+	// splitter, opposite edge.
+	if leftDown && a.dragMode == "termsplit" {
+		a.resizeTermPanelWidth(x + 1)
 		return
 	}
 
@@ -1351,13 +1485,20 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		if a.term.open && a.term.focused && !a.termPanelContains(x, y) {
 			a.term.focused = false
 		}
-		sw := a.sidebarW()
-		splitX := a.splitterX()
 		switch {
-		case splitX >= 0 && x == splitX:
+		case a.splitterX() >= 0 && x == a.splitterX():
 			a.dragMode = "sidebar"
-		case sw > 0 && x < splitX:
+		case a.termSplitterX() >= 0 && x == a.termSplitterX():
+			a.dragMode = "termsplit"
+		case a.inSidebarBlock(x):
 			a.sidebarClick(x, y)
+		// A left-docked terminal strip spans y==0, so its hit-test must
+		// run before the tab-bar row case; a bottom-docked strip never
+		// includes y==0, so the early check is harmless in that layout.
+		case a.term.open && a.termPanelContains(x, y):
+			if a.termPanelPress(x, y) {
+				a.dragMode = "termpanel"
+			}
 		case y == 0:
 			a.tabBarClick(x, y)
 		// The git panel sits inside the editor's former y-range, so its
@@ -1366,10 +1507,6 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		case a.gitPanel.open && a.gitPanelContains(x, y):
 			if a.gitPanelPress(x, y) {
 				a.dragMode = "gitpanel"
-			}
-		case a.term.open && a.termPanelContains(x, y):
-			if a.termPanelPress(x, y) {
-				a.dragMode = "termpanel"
 			}
 		case y > 0 && y < a.height-1:
 			a.editorPress(x, y)
@@ -1407,7 +1544,7 @@ func (a *App) handleMenuMouse(x, y int, btn tcell.ButtonMask) {
 
 // scrollAt scrolls whichever panel the (x, y) cursor is over.
 func (a *App) scrollAt(x, y, delta int) {
-	if sw := a.sidebarW(); sw > 0 && x < sw {
+	if a.inSidebarBlock(x) {
 		a.tree.Scroll(delta)
 		return
 	}
@@ -1427,11 +1564,14 @@ func (a *App) scrollAt(x, y, delta int) {
 }
 
 // scrollAtH scrolls the panel under (x, y) horizontally by delta cells.
-// The file tree has no useful horizontal axis (each row is a single label),
-// so we only honor horizontal wheel events when they fall inside the
-// editor pane.
+// The file tree has no useful horizontal axis (each row is a single label)
+// and neither does the terminal strip, so we only honor horizontal wheel
+// events when they fall inside the editor pane.
 func (a *App) scrollAtH(x, y, delta int) {
-	if sw := a.sidebarW(); sw > 0 && x < sw {
+	if a.inSidebarBlock(x) {
+		return
+	}
+	if a.term.open && a.termPanelContains(x, y) {
 		return
 	}
 	if y > 0 && y < a.height-1 {
@@ -1448,15 +1588,10 @@ func (a *App) scrollAtH(x, y, delta int) {
 // menu's New File defaults to a sensible target even after the context
 // menu closes.
 func (a *App) tryTreeContextClick(x, y int) bool {
-	sw := a.sidebarW()
-	if sw <= 0 {
+	sx, sy, sw, sh := a.sidebarRect()
+	if sw <= 0 || x < sx || x >= sx+sw || y < sy || y >= sy+sh {
 		return false
 	}
-	splitX := a.splitterX()
-	if x >= splitX {
-		return false
-	}
-	sx, sy, _, _ := a.sidebarRect()
 	n, ok := a.tree.HitTest(x-sx, y-sy)
 	if !ok {
 		return false
@@ -1510,8 +1645,8 @@ func (a *App) setActiveFolder(path string) {
 // cells open the action menu; remaining cells switch or close tabs based on
 // where the click landed within their rendered geometry.
 func (a *App) tabBarClick(x, _ int) {
-	sw := a.sidebarW()
-	if x >= sw && x < sw+menuButtonWidth {
+	mx, _, mw, _ := a.menuButtonRect()
+	if x >= mx && x < mx+mw {
 		a.openMenu()
 		return
 	}
@@ -1741,6 +1876,15 @@ func (a *App) OpenFile(path string) { a.openFile(path) }
 // Whatever the path resolves to, its parent becomes the active folder so
 // the next New File from the main menu lands next to it.
 func (a *App) openFile(path string) {
+	// Tabs are keyed by absolute path everywhere downstream — the
+	// LSP diagnostics map, the diff cache, the open-tab dedupe — so
+	// normalize a relative path (a CLI arg like "r-ed foo.go") here,
+	// at the single entry point, rather than teaching every consumer
+	// to cope. New() already anchored rootDir, so tree-driven opens
+	// arrive absolute and this is a no-op for them.
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	a.setActiveFolder(filepath.Dir(path))
 	for i, t := range a.tabs {
 		if t.Path == path {
@@ -2050,6 +2194,40 @@ func (a *App) hasCommentableTab() bool {
 // to paste.
 func (a *App) hasClipboard() bool { return a.clipBuf != "" }
 
+// hasEditableTab reports whether the active tab is editable text — the
+// gate for line-editing actions (duplicate / move line).
+func (a *App) hasEditableTab() bool {
+	t := a.activeTabPtr()
+	return t != nil && !t.IsImage()
+}
+
+// menuDuplicateLines duplicates the cursor's line (or the selected line
+// block) below itself — the menu twin of Ctrl-D.
+func (a *App) menuDuplicateLines() {
+	a.closeMenu()
+	if t := a.activeTabPtr(); t != nil {
+		t.DuplicateLines()
+	}
+}
+
+// menuMoveLinesUp shifts the current line block up one row — the menu
+// twin of Alt-Up.
+func (a *App) menuMoveLinesUp() {
+	a.closeMenu()
+	if t := a.activeTabPtr(); t != nil {
+		t.MoveLines(-1)
+	}
+}
+
+// menuMoveLinesDown shifts the current line block down one row — the
+// menu twin of Alt-Down.
+func (a *App) menuMoveLinesDown() {
+	a.closeMenu()
+	if t := a.activeTabPtr(); t != nil {
+		t.MoveLines(1)
+	}
+}
+
 // hasUndo reports whether the active tab has anything to undo. Used to
 // enable / disable the Undo row in the action menu.
 func (a *App) hasUndo() bool {
@@ -2354,6 +2532,7 @@ func (a *App) draw() {
 	}
 	if a.term.open {
 		a.drawTermPanel()
+		a.drawTermSplitter()
 	}
 	if a.findOpen {
 		a.drawFindBar()
@@ -2390,7 +2569,7 @@ func (a *App) iconsOn() bool {
 //	space, the close ×, and a trailing space.
 func (a *App) layoutTabs() []tabRect {
 	out := make([]tabRect, 0, len(a.tabs))
-	cursor := a.sidebarW() + menuButtonWidth
+	cursor := a.leftBlockW() + menuButtonWidth
 	iconW := 0
 	if a.iconsOn() {
 		iconW = 2 // glyph + space
@@ -2486,9 +2665,9 @@ func (a *App) drawTabBar() {
 	}
 }
 
-// drawSplitter paints a 1-column vertical line at the right edge of the
-// sidebar. Idle it sits in Subtle grey; while the user is dragging it
-// brightens to Accent so the active grab handle is unmistakable.
+// drawSplitter paints a 1-column vertical line at the editor-facing edge
+// of the sidebar. Idle it sits in Subtle grey; while the user is dragging
+// it brightens to Accent so the active grab handle is unmistakable.
 func (a *App) drawSplitter() {
 	x := a.splitterX()
 	if x < 0 {
@@ -2496,6 +2675,25 @@ func (a *App) drawSplitter() {
 	}
 	fg := a.theme.Subtle
 	if a.dragMode == "sidebar" {
+		fg = a.theme.Accent
+	}
+	style := tcell.StyleDefault.Background(a.theme.SidebarBG).Foreground(fg)
+	for y := 0; y < a.height-1; y++ {
+		a.screen.SetContent(x, y, '│', nil, style)
+	}
+}
+
+// drawTermSplitter paints the left-docked terminal strip's resize
+// handle — the same visual language as the sidebar splitter, on the
+// strip's editor-facing (right) edge. No-op in the bottom-dock layout,
+// where the header rule is the grab handle instead.
+func (a *App) drawTermSplitter() {
+	x := a.termSplitterX()
+	if x < 0 {
+		return
+	}
+	fg := a.theme.Subtle
+	if a.dragMode == "termsplit" {
 		fg = a.theme.Accent
 	}
 	style := tcell.StyleDefault.Background(a.theme.SidebarBG).Foreground(fg)

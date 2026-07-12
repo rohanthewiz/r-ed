@@ -574,12 +574,12 @@ func waitForFormatEvent(t *testing.T, a *App) *formatDoneEvent {
 func stubBuiltinFormatter(t *testing.T, argv []string) *int {
 	t.Helper()
 	calls := 0
-	builtinCommandFor = func(path string) []string {
+	builtinCommandsFor = func(path string) [][]string {
 		calls++
 		if filepath.Ext(path) != ".go" {
 			return nil
 		}
-		return argv
+		return [][]string{argv}
 	}
 	return &calls
 }

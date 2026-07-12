@@ -181,10 +181,14 @@ func (a *App) menuToggleGitPanel() {
 	}
 	a.gitPanel.open = !a.gitPanel.open
 	if a.gitPanel.open {
-		// Single-occupancy bottom strip: the terminal yields (its
-		// session and scrollback survive — Esc-` brings it right back).
-		a.term.open = false
-		a.term.focused = false
+		// Single-occupancy bottom strip: a bottom-docked terminal
+		// yields (its session and scrollback survive — Esc-` brings
+		// it right back). A left-docked strip isn't competing for
+		// the bottom, so it stays.
+		if !a.termDockLeft {
+			a.term.open = false
+			a.term.focused = false
+		}
 		a.refreshGitPanelFiles()
 	}
 }
@@ -458,17 +462,18 @@ func (a *App) shrinkGitPanel() {
 	a.resizeGitPanel(a.gitPanelHeight() - gitPanelResizeStep)
 }
 
-// gitPanelRect returns the panel's on-screen rectangle: editor-width,
-// sitting directly above the find bar (when open) and the status bar —
-// the editor shrinks to make room (see editorRect).
+// gitPanelRect returns the panel's on-screen rectangle: editor-width
+// (the column band between the docked side blocks), sitting directly
+// above the find bar (when open) and the status bar — the editor
+// shrinks to make room (see editorRect).
 func (a *App) gitPanelRect() (x, y, w, h int) {
-	sw := a.sidebarW()
+	lw := a.leftBlockW()
 	h = a.gitPanelHeight()
 	y = a.height - 1 - h
 	if a.findOpen {
 		y -= findBarHeight
 	}
-	return sw, y, a.width - sw, h
+	return lw, y, a.width - lw - a.rightBlockW(), h
 }
 
 // gitPanelListWidth returns the file-list column width for a panel of

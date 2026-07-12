@@ -12,11 +12,14 @@
 // touches the file the user just saved. Running it therefore needs no
 // consent flow, the same way the editor runs `git` without asking.
 //
-// goimports is preferred over gofmt because it's a strict superset:
-// it applies gofmt's formatting AND adds/removes import lines to
-// match the code (the "auto-import" half of the feature). When
-// goimports isn't installed we degrade to plain gofmt, and when
-// neither is on PATH the save behaves exactly as before — silent
+// goimports is preferred because it's a strict superset of gofmt: it
+// applies gofmt's formatting AND adds/removes import lines to match
+// the code (the "auto-import" half of the feature). When goimports
+// isn't installed but gopls is, `gopls imports -w` provides the same
+// import fixing (gopls is far more commonly installed than the
+// standalone goimports these days), chained with a plain gofmt pass
+// for the formatting half. With neither, plain gofmt still formats;
+// with nothing on PATH the save behaves exactly as before — silent
 // degradation, the same contract as the LSP integration.
 
 package format
@@ -31,20 +34,21 @@ import (
 // on which Go tools the machine running the tests happens to have.
 var lookPath = exec.LookPath
 
-// builtinTools lists the Go formatters we know how to run, in
-// preference order. Each takes `-w <file>` to rewrite in place, which
-// is why one argv shape below serves both.
-var builtinTools = []string{"goimports", "gofmt"}
-
-// BuiltinCommandFor returns the built-in formatter argv for filePath,
-// or nil when the file isn't Go or no Go formatter is installed. The
-// argv carries the resolved binary path and the file's absolute path,
-// ready for exec.Command.
+// BuiltinCommandsFor returns the built-in formatter pipeline for
+// filePath — a list of argvs to run in order, each rewriting the file
+// in place — or nil when the file isn't Go or no Go tool is installed.
+// Each argv carries the resolved binary path and the file's absolute
+// path, ready for exec.Command. Preference order:
+//
+//	goimports -w            (format + fix imports, one tool)
+//	gopls imports -w        (fix imports…)
+//	  then gofmt -w         (…then format — two tools, same outcome)
+//	gofmt -w                (format only; imports degrade silently)
 //
 // Precedence contract: a project format.json entry for "go" overrides
 // this — callers must consult Config.CommandFor first and only fall
 // back here when it returns nil.
-func BuiltinCommandFor(filePath string) []string {
+func BuiltinCommandsFor(filePath string) [][]string {
 	if strings.TrimPrefix(filepath.Ext(filePath), ".") != "go" {
 		return nil
 	}
@@ -52,10 +56,15 @@ func BuiltinCommandFor(filePath string) []string {
 	if err != nil {
 		abs = filePath
 	}
-	for _, tool := range builtinTools {
-		if bin, lookErr := lookPath(tool); lookErr == nil {
-			return []string{bin, "-w", abs}
-		}
+	if bin, lookErr := lookPath("goimports"); lookErr == nil {
+		return [][]string{{bin, "-w", abs}}
 	}
-	return nil
+	var cmds [][]string
+	if bin, lookErr := lookPath("gopls"); lookErr == nil {
+		cmds = append(cmds, []string{bin, "imports", "-w", abs})
+	}
+	if bin, lookErr := lookPath("gofmt"); lookErr == nil {
+		cmds = append(cmds, []string{bin, "-w", abs})
+	}
+	return cmds
 }

@@ -69,8 +69,8 @@ func newTestApp(t *testing.T, root string) *App {
 	// machine running the tests has on PATH. Tests that exercise the
 	// builtin path swap in their own stub; the cleanup restores the
 	// real resolver either way.
-	builtinCommandFor = func(string) []string { return nil }
-	t.Cleanup(func() { builtinCommandFor = format.BuiltinCommandFor })
+	builtinCommandsFor = func(string) [][]string { return nil }
+	t.Cleanup(func() { builtinCommandsFor = format.BuiltinCommandsFor })
 	// Stub the terminal's grsh session for the same reason as the two
 	// above: opening the panel in a test must never create a session
 	// that can execute real commands. Terminal tests reach the fake
@@ -1260,6 +1260,53 @@ func TestHandleKey_EscDoubleTapOpensMenu(t *testing.T) {
 	}
 }
 
+// TestHandleKey_AltEscTogglesMenu pins the tmux path to the menu: a fast
+// double-Esc is buffered by tmux's escape-time into one "\x1b\x1b" write,
+// which tcell folds into a single KeyEsc event carrying ModAlt. That event
+// must toggle the menu directly — without it the menu is unreachable by
+// keyboard inside tmux.
+func TestHandleKey_AltEscTogglesMenu(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.handleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModAlt))
+	if !a.menuOpen {
+		t.Fatal("Alt+Esc (tmux-batched double-Esc) should open the menu")
+	}
+	a.handleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModAlt))
+	if a.menuOpen {
+		t.Fatal("Alt+Esc with the menu open should close it")
+	}
+}
+
+// TestHandleKey_AltRuneFiresLeader pins the tmux path to the leader table:
+// "Esc, t" inside the escape-time window arrives as one Alt+t event with no
+// separate Esc to arm lastEscape, and must still fire the binding (here the
+// sidebar toggle). An unbound Alt rune must fall through untouched so
+// Option-as-Meta typing still reaches the buffer.
+func TestHandleKey_AltRuneFiresLeader(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.txt")
+	if err := os.WriteFile(target, []byte(""), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := newTestApp(t, dir)
+	a.openFile(target)
+
+	shown := a.sidebarShown
+	a.handleKey(tcell.NewEventKey(tcell.KeyRune, 't', tcell.ModAlt))
+	if a.sidebarShown == shown {
+		t.Fatal("Alt+t (tmux-batched Esc-t) should fire the sidebar-toggle leader")
+	}
+	if got := a.activeTabPtr().Buffer.String(); got != "" {
+		t.Fatalf("leader rune must not be inserted into the buffer, got %q", got)
+	}
+
+	// 'z' is unbound: the rune should reach the buffer like any other key.
+	a.handleKey(tcell.NewEventKey(tcell.KeyRune, 'z', tcell.ModAlt))
+	if got := a.activeTabPtr().Buffer.String(); got != "z" {
+		t.Fatalf("unbound Alt rune should fall through to typing, got %q", got)
+	}
+}
+
 // TestHandleKey_MenuNavKeys move highlight and Enter activates.
 func TestHandleKey_MenuNavKeys(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
@@ -1299,6 +1346,120 @@ func TestHandleKey_RoutesToActiveTab(t *testing.T) {
 	a.handleKey(keyEv(tcell.KeyPgUp, 0))
 	a.handleKey(keyEv(tcell.KeyPgDn, 0))
 	a.handleKey(keyEv(tcell.KeyDelete, 0))
+}
+
+// TestHandleKey_ShiftArrowsGrowSelection pins keyboard selection: every
+// arrow (and Home/End/PgUp/PgDn) carrying ModShift extends from the anchor
+// instead of collapsing it, and consecutive shifted presses keep growing
+// the same selection. A plain arrow afterwards must collapse it — that's
+// what makes Shift the selection modifier rather than a sticky mode.
+func TestHandleKey_ShiftArrowsGrowSelection(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbravo\ncharlie\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := newTestApp(t, dir)
+	a.openFile(target)
+	tab := a.activeTabPtr()
+
+	a.handleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModShift))
+	if !tab.HasSelection() || tab.SelectionText() != "a" {
+		t.Fatalf("Shift+Right should select %q, got %q", "a", tab.SelectionText())
+	}
+	a.handleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModShift))
+	if tab.SelectionText() != "al" {
+		t.Fatalf("second Shift+Right should grow selection to %q, got %q", "al", tab.SelectionText())
+	}
+	a.handleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModShift))
+	if tab.SelectionText() != "alpha\nbr" {
+		t.Fatalf("Shift+Down should grow selection across lines, got %q", tab.SelectionText())
+	}
+	a.handleKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModShift))
+	if tab.SelectionText() != "alpha\nbravo" {
+		t.Fatalf("Shift+End should extend to line end, got %q", tab.SelectionText())
+	}
+	// Plain (unshifted) movement collapses the selection.
+	a.handleKey(keyEv(tcell.KeyLeft, 0))
+	if tab.HasSelection() {
+		t.Fatal("plain arrow should collapse the selection")
+	}
+	// Shift+Up from a collapsed cursor selects backwards.
+	a.handleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModShift))
+	if !tab.HasSelection() {
+		t.Fatal("Shift+Up should start a backwards selection")
+	}
+}
+
+// TestHandleKey_CtrlDDuplicatesLine wires Ctrl-D to line duplication —
+// the one sanctioned Ctrl shortcut (no tmux/flow-control collision).
+func TestHandleKey_CtrlDDuplicatesLine(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.txt")
+	if err := os.WriteFile(target, []byte("one\ntwo\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := newTestApp(t, dir)
+	a.openFile(target)
+	a.handleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl))
+	if got := a.activeTabPtr().Buffer.String(); got != "one\none\ntwo\n" {
+		t.Fatalf("Ctrl-D should duplicate the cursor line, got %q", got)
+	}
+}
+
+// TestHandleKey_AltArrowsMoveLine wires Alt+Up / Alt+Down to line moves
+// while plain arrows keep moving the cursor.
+func TestHandleKey_AltArrowsMoveLine(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.txt")
+	if err := os.WriteFile(target, []byte("one\ntwo\nthree\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := newTestApp(t, dir)
+	a.openFile(target)
+	tab := a.activeTabPtr()
+
+	a.handleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModAlt))
+	if got := tab.Buffer.String(); got != "two\none\nthree\n" {
+		t.Fatalf("Alt+Down should move the line down, got %q", got)
+	}
+	if tab.Cursor.Line != 1 {
+		t.Fatalf("cursor should travel with the moved line, got line %d", tab.Cursor.Line)
+	}
+	a.handleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModAlt))
+	if got := tab.Buffer.String(); got != "one\ntwo\nthree\n" {
+		t.Fatalf("Alt+Up should move the line back, got %q", got)
+	}
+}
+
+// TestOpenFile_AbsolutizesRelativePath pins the tab-path invariant every
+// downstream map (LSP diagnostics, diff cache, tab dedupe) relies on:
+// a relative path — the CLI "r-ed foo.go" case — is normalized to an
+// absolute one at the openFile entry point. Relative tab paths are what
+// silently broke gopls: its diagnostics come back keyed by absolute
+// paths that never matched.
+func TestOpenFile_AbsolutizesRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rel.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := newTestApp(t, dir)
+	t.Chdir(dir)
+
+	a.openFile("rel.txt")
+	tab := a.activeTabPtr()
+	if tab == nil {
+		t.Fatal("expected a tab")
+	}
+	if !filepath.IsAbs(tab.Path) {
+		t.Fatalf("tab path should be absolute, got %q", tab.Path)
+	}
+	// Re-opening via the absolute path must land on the same tab, not a
+	// duplicate — the dedupe key is the normalized path.
+	a.openFile(tab.Path)
+	if len(a.tabs) != 1 {
+		t.Fatalf("expected 1 tab after reopen, got %d", len(a.tabs))
+	}
 }
 
 // TestHandleEvent_Resize updates width/height.
@@ -1491,9 +1652,9 @@ func TestHandleMouse_SidebarSplitterDrag(t *testing.T) {
 func TestHandleMenuMouse_ClicksRowAndOutside(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	// The toggle row lives near the menu's bottom, past what a 40-row
-	// screen shows of the 46-row layout; give it room so this test stays
+	// screen shows of the 56-row layout; give it room so this test stays
 	// about click dispatch (scrolled clicks are pinned separately).
-	a.height = 50
+	a.height = 60
 	a.openMenu()
 	mx, my, _, _ := a.menuModalRect()
 	// Click on the sidebar toggle row — flips the sidebar.
@@ -1642,13 +1803,13 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 53 {
-		t.Errorf("modalHeight = %d, want 53", h)
+	if h != 57 {
+		t.Errorf("modalHeight = %d, want 57", h)
 	}
-	if got := len(items); got != 41 {
-		t.Errorf("item count = %d, want 41 built-ins", got)
+	if got := len(items); got != 45 {
+		t.Errorf("item count = %d, want 45 built-ins", got)
 	}
-	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 47, 50}
+	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 50, 54}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1707,8 +1868,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 56 { // 53 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 56", h)
+	if h != 60 { // 57 + 2 items + 1 divider
+		t.Errorf("modalHeight = %d, want 60", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.

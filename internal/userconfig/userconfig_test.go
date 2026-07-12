@@ -275,3 +275,74 @@ func TestSaveAutoSave_RefusesMalformedConfig(t *testing.T) {
 		t.Fatalf("malformed config was modified: %q", data)
 	}
 }
+
+// TestDefaultsTermDockBottom pins the default layout: the terminal is
+// a bottom strip unless the user opted into the left dock.
+func TestDefaultsTermDockBottom(t *testing.T) {
+	if Defaults().TermDock != TermDockBottom {
+		t.Fatalf("default termdock = %q, want %q", Defaults().TermDock, TermDockBottom)
+	}
+}
+
+// TestLoadTermDockValues covers both accepted values plus the
+// keep-the-default omission case.
+func TestLoadTermDockValues(t *testing.T) {
+	cases := []struct {
+		json string
+		want TermDock
+	}{
+		{`{"termdock": "left"}`, TermDockLeft},
+		{`{"termdock": "bottom"}`, TermDockBottom},
+		{`{"icons": "off"}`, TermDockBottom}, // omitted → default
+	}
+	for _, tc := range cases {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(tc.json), 0644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", tc.json, err)
+		}
+		if cfg.TermDock != tc.want {
+			t.Errorf("Load(%s).TermDock = %q, want %q", tc.json, cfg.TermDock, tc.want)
+		}
+	}
+}
+
+// TestLoadTermDockInvalid surfaces a typo as an error rather than
+// silently snapping to the default — same contract as icons/autosave.
+func TestLoadTermDockInvalid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"termdock": "sideways"}`), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an error for an unknown termdock value")
+	}
+}
+
+// TestSaveTermDock_RoundTripsAndPreserves saves the preference into a
+// config that already has hand-set keys and verifies both survive —
+// the same unknown-key guarantee SaveAutoSave makes.
+func TestSaveTermDock_RoundTripsAndPreserves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	seed := "{\n  \"icons\": \"on\",\n  \"future-key\": 42\n}\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveTermDock(path, TermDockLeft); err != nil {
+		t.Fatalf("SaveTermDock: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if cfg.TermDock != TermDockLeft || cfg.Icons != IconsOn {
+		t.Fatalf("round trip lost values: termdock=%q icons=%q", cfg.TermDock, cfg.Icons)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "future-key") {
+		t.Fatal("unknown key was dropped by the save round-trip")
+	}
+}

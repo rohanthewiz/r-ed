@@ -101,11 +101,12 @@ func (a *App) hasFindable() bool {
 }
 
 // findBarRect returns the on-screen rectangle of the find bar. Always
-// the row directly above the status bar; height is findBarHeight.
-// Caller is expected to check a.findOpen before drawing.
+// the row directly above the status bar, spanning the editor's column
+// band; height is findBarHeight. Caller is expected to check
+// a.findOpen before drawing.
 func (a *App) findBarRect() (x, y, w, h int) {
-	sw := a.sidebarW()
-	return sw, a.height - 1 - findBarHeight, a.width - sw, findBarHeight
+	lw := a.leftBlockW()
+	return lw, a.height - 1 - findBarHeight, a.width - lw - a.rightBlockW(), findBarHeight
 }
 
 // handleFindKey dispatches a keystroke while the find bar is focused.

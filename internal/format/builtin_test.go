@@ -28,16 +28,20 @@ func stubLookPath(t *testing.T, tools map[string]string) {
 	t.Cleanup(func() { lookPath = orig })
 }
 
-// TestBuiltinCommandFor_PrefersGoimports pins the preference order:
-// when both tools are installed, goimports must win because it's the
-// one that also fixes imports — picking gofmt would silently drop the
-// auto-import half of the feature.
-func TestBuiltinCommandFor_PrefersGoimports(t *testing.T) {
+// TestBuiltinCommandsFor_PrefersGoimports pins the preference order:
+// when everything is installed, goimports alone must win because it
+// formats AND fixes imports in one pass — no chain needed.
+func TestBuiltinCommandsFor_PrefersGoimports(t *testing.T) {
 	stubLookPath(t, map[string]string{
 		"goimports": "/fake/bin/goimports",
+		"gopls":     "/fake/bin/gopls",
 		"gofmt":     "/fake/bin/gofmt",
 	})
-	argv := BuiltinCommandFor("/proj/main.go")
+	cmds := BuiltinCommandsFor("/proj/main.go")
+	if len(cmds) != 1 {
+		t.Fatalf("cmds = %v, want single goimports command", cmds)
+	}
+	argv := cmds[0]
 	if len(argv) != 3 || argv[0] != "/fake/bin/goimports" || argv[1] != "-w" {
 		t.Fatalf("argv = %v, want [/fake/bin/goimports -w <file>]", argv)
 	}
@@ -46,38 +50,71 @@ func TestBuiltinCommandFor_PrefersGoimports(t *testing.T) {
 	}
 }
 
-// TestBuiltinCommandFor_FallsBackToGofmt covers the machine that has
-// a Go toolchain but never installed goimports — formatting should
-// still happen, just without import management.
-func TestBuiltinCommandFor_FallsBackToGofmt(t *testing.T) {
-	stubLookPath(t, map[string]string{"gofmt": "/fake/bin/gofmt"})
-	argv := BuiltinCommandFor("/proj/main.go")
-	if len(argv) != 3 || argv[0] != "/fake/bin/gofmt" {
-		t.Fatalf("argv = %v, want gofmt fallback", argv)
+// TestBuiltinCommandsFor_GoplsChain covers the increasingly common
+// machine that has gopls (for the LSP) but never installed the
+// standalone goimports: import fixing must not silently vanish. The
+// pipeline is `gopls imports -w` for the imports, then `gofmt -w` for
+// the formatting goimports would otherwise have applied.
+func TestBuiltinCommandsFor_GoplsChain(t *testing.T) {
+	stubLookPath(t, map[string]string{
+		"gopls": "/fake/bin/gopls",
+		"gofmt": "/fake/bin/gofmt",
+	})
+	cmds := BuiltinCommandsFor("/proj/main.go")
+	if len(cmds) != 2 {
+		t.Fatalf("cmds = %v, want gopls-imports + gofmt chain", cmds)
+	}
+	if cmds[0][0] != "/fake/bin/gopls" || cmds[0][1] != "imports" || cmds[0][2] != "-w" {
+		t.Fatalf("cmds[0] = %v, want [gopls imports -w <file>]", cmds[0])
+	}
+	if cmds[1][0] != "/fake/bin/gofmt" || cmds[1][1] != "-w" {
+		t.Fatalf("cmds[1] = %v, want [gofmt -w <file>]", cmds[1])
 	}
 }
 
-// TestBuiltinCommandFor_NoToolsIsNil pins silent degradation: no Go
+// TestBuiltinCommandsFor_GoplsOnly pins the gopls-without-gofmt case
+// (a machine with a gopls binary but no Go toolchain dir on PATH):
+// import fixing still runs alone rather than being dropped.
+func TestBuiltinCommandsFor_GoplsOnly(t *testing.T) {
+	stubLookPath(t, map[string]string{"gopls": "/fake/bin/gopls"})
+	cmds := BuiltinCommandsFor("/proj/main.go")
+	if len(cmds) != 1 || cmds[0][0] != "/fake/bin/gopls" || cmds[0][1] != "imports" {
+		t.Fatalf("cmds = %v, want lone gopls imports command", cmds)
+	}
+}
+
+// TestBuiltinCommandsFor_FallsBackToGofmt covers the machine that has
+// a Go toolchain but neither goimports nor gopls — formatting should
+// still happen, just without import management.
+func TestBuiltinCommandsFor_FallsBackToGofmt(t *testing.T) {
+	stubLookPath(t, map[string]string{"gofmt": "/fake/bin/gofmt"})
+	cmds := BuiltinCommandsFor("/proj/main.go")
+	if len(cmds) != 1 || cmds[0][0] != "/fake/bin/gofmt" {
+		t.Fatalf("cmds = %v, want gofmt fallback", cmds)
+	}
+}
+
+// TestBuiltinCommandsFor_NoToolsIsNil pins silent degradation: no Go
 // tools on PATH means no builtin formatting and no error — the save
 // must behave exactly as it did before this feature existed.
-func TestBuiltinCommandFor_NoToolsIsNil(t *testing.T) {
+func TestBuiltinCommandsFor_NoToolsIsNil(t *testing.T) {
 	stubLookPath(t, nil)
-	if argv := BuiltinCommandFor("/proj/main.go"); argv != nil {
-		t.Fatalf("argv = %v, want nil when nothing is installed", argv)
+	if cmds := BuiltinCommandsFor("/proj/main.go"); cmds != nil {
+		t.Fatalf("cmds = %v, want nil when nothing is installed", cmds)
 	}
 }
 
-// TestBuiltinCommandFor_NonGoIsNil ensures the builtin only ever
+// TestBuiltinCommandsFor_NonGoIsNil ensures the builtin only ever
 // fires for Go files — other languages stay on the opt-in
 // format.json path, prompts and all.
-func TestBuiltinCommandFor_NonGoIsNil(t *testing.T) {
+func TestBuiltinCommandsFor_NonGoIsNil(t *testing.T) {
 	stubLookPath(t, map[string]string{
 		"goimports": "/fake/bin/goimports",
 		"gofmt":     "/fake/bin/gofmt",
 	})
 	for _, p := range []string{"/proj/notes.txt", "/proj/main.py", "/proj/Makefile", "/proj/go"} {
-		if argv := BuiltinCommandFor(p); argv != nil {
-			t.Errorf("BuiltinCommandFor(%q) = %v, want nil", p, argv)
+		if cmds := BuiltinCommandsFor(p); cmds != nil {
+			t.Errorf("BuiltinCommandsFor(%q) = %v, want nil", p, cmds)
 		}
 	}
 }

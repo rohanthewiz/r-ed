@@ -15,11 +15,14 @@
 // struct so we can grow new top-level fields without breaking older
 // configs:
 //
-//	{"icons": "auto"}    // default; auto-detect Nerd Fonts on startup
-//	{"icons": "on"}      // force-on, even if detection would say no
-//	{"icons": "off"}     // force-off, even if a Nerd Font is installed
-//	{"autosave": "on"}   // default; save dirty buffers after an idle pause
-//	{"autosave": "off"}  // only explicit ≡ → Save writes to disk
+//	{"icons": "auto"}       // default; auto-detect Nerd Fonts on startup
+//	{"icons": "on"}         // force-on, even if detection would say no
+//	{"icons": "off"}        // force-off, even if a Nerd Font is installed
+//	{"autosave": "on"}      // default; save dirty buffers after an idle pause
+//	{"autosave": "off"}     // only explicit ≡ → Save writes to disk
+//	{"termdock": "bottom"}  // default; terminal panel is a bottom strip
+//	{"termdock": "left"}    // terminal docks as a vertical strip on the
+//	                        // left; the file tree flips to the right
 //
 // The loader is best-effort the same way customactions is: missing
 // file → defaults, malformed file → error returned for the app to
@@ -46,6 +49,16 @@ const (
 	IconsOff  IconsMode = "off"
 )
 
+// TermDock is where the terminal panel docks: the classic bottom
+// strip, or a vertical strip on the left (which flips the file tree
+// to the right edge).
+type TermDock string
+
+const (
+	TermDockBottom TermDock = "bottom"
+	TermDockLeft   TermDock = "left"
+)
+
 // Config is the resolved, validated form of config.json. Callers get a
 // fully-populated Config back from Load — defaults are filled in for
 // any field the file omitted, so consumers never need to nil-check.
@@ -57,13 +70,19 @@ type Config struct {
 	// is opinionated toward "your work is always on disk", and the
 	// ≡ menu toggle (which persists here) is the escape hatch.
 	AutoSave bool
+
+	// TermDock is the terminal panel's home edge. Defaults to the
+	// bottom strip; "left" selects the alternate layout (terminal
+	// vertical on the left, file tree on the right). Persisted by
+	// the ≡ layout toggle, same as AutoSave.
+	TermDock TermDock
 }
 
 // Defaults returns a Config populated with the values used when no
 // config file is present (or every field in it is blank). Centralised
 // so tests and the loader can't drift from each other.
 func Defaults() Config {
-	return Config{Icons: IconsAuto, AutoSave: true}
+	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom}
 }
 
 // fileFormat mirrors the on-disk JSON shape. We decode into this and
@@ -75,6 +94,7 @@ func Defaults() Config {
 type fileFormat struct {
 	Icons    string `json:"icons,omitempty"`
 	AutoSave string `json:"autosave,omitempty"`
+	TermDock string `json:"termdock,omitempty"`
 }
 
 // DefaultPath returns the canonical config-file location:
@@ -155,19 +175,49 @@ func Load(path string) (Config, error) {
 			path, ff.AutoSave,
 		)
 	}
+
+	switch TermDock(strings.ToLower(strings.TrimSpace(ff.TermDock))) {
+	case "":
+		// field omitted — keep default
+	case TermDockBottom:
+		cfg.TermDock = TermDockBottom
+	case TermDockLeft:
+		cfg.TermDock = TermDockLeft
+	default:
+		return Defaults(), fmt.Errorf(
+			"%s: termdock must be %q or %q (got %q)",
+			path, TermDockBottom, TermDockLeft, ff.TermDock,
+		)
+	}
 	return cfg, nil
 }
 
 // SaveAutoSave persists the auto-save preference into the config file
-// at path, preserving every other key the user may have set by hand
-// (icons today, anything we add tomorrow). The read-modify-write goes
+// at path. See saveKey for the round-trip guarantees.
+func SaveAutoSave(path string, on bool) error {
+	val := "on"
+	if !on {
+		val = "off"
+	}
+	return saveKey(path, "autosave", val)
+}
+
+// SaveTermDock persists the terminal-dock preference into the config
+// file at path. See saveKey for the round-trip guarantees.
+func SaveTermDock(path string, dock TermDock) error {
+	return saveKey(path, "termdock", string(dock))
+}
+
+// saveKey writes one preference into the config file at path,
+// preserving every other key the user may have set by hand (icons
+// today, anything we add tomorrow). The read-modify-write goes
 // through a raw map — not fileFormat — so keys this binary doesn't
 // know about survive a round-trip with a newer or older r-ed.
 // Writes atomically (temp + rename), same as the format-config
 // installer, so a crash mid-write can't corrupt the config.
-func SaveAutoSave(path string, on bool) error {
+func saveKey(path, key, val string) error {
 	if path == "" {
-		return errors.New("no config directory resolved — cannot persist auto-save preference")
+		return errors.New("no config directory resolved — cannot persist preference")
 	}
 	raw := map[string]any{}
 	data, err := os.ReadFile(path)
@@ -175,18 +225,14 @@ func SaveAutoSave(path string, on bool) error {
 	case err == nil && len(data) > 0:
 		if err := json.Unmarshal(data, &raw); err != nil {
 			// A malformed config is the user's hand-edit; overwriting
-			// it with just {"autosave": …} would eat their file.
+			// it with a single fresh key would eat their file.
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	val := "on"
-	if !on {
-		val = "off"
-	}
-	raw["autosave"] = val
+	raw[key] = val
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

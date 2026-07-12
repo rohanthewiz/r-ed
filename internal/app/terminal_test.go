@@ -24,6 +24,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rohanthewiz/grsh"
+
+	"github.com/rohanthewiz/r-ed/internal/userconfig"
 )
 
 // fakeTermEval satisfies termEvaluator with recordable, controllable
@@ -688,4 +690,228 @@ func screenContainsText(scr tcell.Screen, want string) bool {
 		}
 	}
 	return false
+}
+
+// -----------------------------------------------------------------------------
+// Left-dock layout (terminal vertical on the left, file tree on the right)
+// -----------------------------------------------------------------------------
+
+// newLeftDockApp is the shared fixture for left-dock tests: a test app
+// flipped into the alternate layout with the terminal open.
+func newLeftDockApp(t *testing.T) *App {
+	t.Helper()
+	a := newTestApp(t, t.TempDir())
+	a.termDockLeft = true
+	a.term.open = true
+	a.ensureTermSession()
+	return a
+}
+
+// TestTermLeftDockGeometry pins the flipped layout's shape: the strip
+// hugs the left edge full-height, its splitter sits on its rightmost
+// column, the sidebar block hugs the right edge with its splitter on
+// the block's leftmost column, and the editor band between them keeps
+// its full height (a left-docked terminal costs columns, not rows).
+func TestTermLeftDockGeometry(t *testing.T) {
+	a := newLeftDockApp(t)
+
+	strip := a.termStripW()
+	if strip <= 0 {
+		t.Fatal("open left-docked terminal should consume columns")
+	}
+	if got := a.leftBlockW(); got != strip {
+		t.Fatalf("leftBlockW = %d, want strip width %d", got, strip)
+	}
+	if got := a.termSplitterX(); got != strip-1 {
+		t.Fatalf("termSplitterX = %d, want %d", got, strip-1)
+	}
+	px, py, pw, ph := a.termPanelRect()
+	if px != 0 || py != 0 || pw != strip-1 || ph != a.height-1 {
+		t.Fatalf("termPanelRect = (%d,%d,%d,%d), want (0,0,%d,%d)", px, py, pw, ph, strip-1, a.height-1)
+	}
+
+	if got := a.splitterX(); got != a.width-a.sidebarWidth {
+		t.Fatalf("sidebar splitterX = %d, want %d", got, a.width-a.sidebarWidth)
+	}
+	sx, _, sw, _ := a.sidebarRect()
+	if sx != a.width-a.sidebarWidth+1 || sw != a.sidebarWidth-1 {
+		t.Fatalf("sidebarRect x=%d w=%d, want x=%d w=%d", sx, sw, a.width-a.sidebarWidth+1, a.sidebarWidth-1)
+	}
+	if !a.inSidebarBlock(a.width-1) || a.inSidebarBlock(0) {
+		t.Fatal("inSidebarBlock should track the right-docked block")
+	}
+
+	ex, ey, ew, eh := a.editorRect()
+	if ex != strip {
+		t.Fatalf("editor x = %d, want %d (starts after the strip)", ex, strip)
+	}
+	if ew != a.width-strip-a.sidebarW() {
+		t.Fatalf("editor w = %d, want %d", ew, a.width-strip-a.sidebarW())
+	}
+	if eh != a.height-2 {
+		t.Fatalf("editor h = %d, want %d — a left-docked terminal must not cost rows", eh, a.height-2)
+	}
+	if ey != 1 {
+		t.Fatalf("editor y = %d, want 1", ey)
+	}
+	// Tab bar and menu button follow the strip, not the sidebar.
+	tx, _, tw, _ := a.tabBarRect()
+	if tx != strip || tw != a.width-strip-a.sidebarW() {
+		t.Fatalf("tabBarRect x=%d w=%d, want x=%d w=%d", tx, tw, strip, a.width-strip-a.sidebarW())
+	}
+	mx, _, _, _ := a.menuButtonRect()
+	if mx != strip {
+		t.Fatalf("menu button x = %d, want %d", mx, strip)
+	}
+}
+
+// TestTermLeftDockSplitterDrag drives the full mouse gesture through
+// handleMouse: press on the strip's splitter column arms the termsplit
+// drag, and dragging right widens the strip (glued to the cursor).
+func TestTermLeftDockSplitterDrag(t *testing.T) {
+	a := newLeftDockApp(t)
+	splitX := a.termSplitterX()
+
+	a.handleMouse(tcell.NewEventMouse(splitX, 10, tcell.Button1, tcell.ModNone))
+	if a.dragMode != "termsplit" {
+		t.Fatalf("dragMode = %q, want termsplit", a.dragMode)
+	}
+	target := splitX + 10
+	a.handleMouse(tcell.NewEventMouse(target, 10, tcell.Button1, tcell.ModNone))
+	if got := a.termStripW(); got != target+1 {
+		t.Fatalf("strip width after drag = %d, want %d", got, target+1)
+	}
+	// Release ends the drag.
+	a.handleMouse(tcell.NewEventMouse(target, 10, tcell.ButtonNone, tcell.ModNone))
+	if a.dragMode != "" {
+		t.Fatalf("dragMode after release = %q, want empty", a.dragMode)
+	}
+}
+
+// TestTermLeftDockSidebarDragFromRight verifies the sidebar splitter
+// gesture in the flipped layout: dragging the handle LEFT grows the
+// right-docked tree.
+func TestTermLeftDockSidebarDragFromRight(t *testing.T) {
+	a := newLeftDockApp(t)
+	splitX := a.splitterX()
+	a.handleMouse(tcell.NewEventMouse(splitX, 10, tcell.Button1, tcell.ModNone))
+	if a.dragMode != "sidebar" {
+		t.Fatalf("dragMode = %q, want sidebar", a.dragMode)
+	}
+	a.handleMouse(tcell.NewEventMouse(splitX-5, 10, tcell.Button1, tcell.ModNone))
+	if got := a.sidebarWidth; got != a.width-(splitX-5) {
+		t.Fatalf("sidebar width after drag = %d, want %d", got, a.width-(splitX-5))
+	}
+}
+
+// TestTermLeftDockWidthResizeClamp pins the width band: never narrower
+// than termPanelMinWidth, never so wide the editor loses its minimum
+// columns next to the sidebar.
+func TestTermLeftDockWidthResizeClamp(t *testing.T) {
+	a := newLeftDockApp(t)
+	a.resizeTermPanelWidth(1)
+	if got := a.termPanelWidth(); got != termPanelMinWidth {
+		t.Errorf("width after tiny resize = %d, want floor %d", got, termPanelMinWidth)
+	}
+	a.resizeTermPanelWidth(1000)
+	if got, max := a.termPanelWidth(), a.maxTermPanelWidth(); got != max {
+		t.Errorf("width after huge resize = %d, want ceiling %d", got, max)
+	}
+}
+
+// TestTermLeftDockHeaderIsNotAGrabHandle: in the flipped layout the
+// strip is resized by its vertical splitter; a press on the header row
+// must focus the panel, not arm a height drag that makes no sense.
+func TestTermLeftDockHeaderIsNotAGrabHandle(t *testing.T) {
+	a := newLeftDockApp(t)
+	a.term.focused = false
+	_, py, _, _ := a.termPanelRect()
+	if a.termPanelPress(2, py) {
+		t.Fatal("header press in left dock must not start a resize drag")
+	}
+}
+
+// TestTermLeftDockCoexistsWithGitPanel: the single-occupancy rule is
+// about the BOTTOM strip. A left-docked terminal and the git panel
+// don't compete, so opening one must not evict the other — and
+// flipping back to bottom dock restores the exclusivity.
+func TestTermLeftDockCoexistsWithGitPanel(t *testing.T) {
+	a := newLeftDockApp(t)
+	a.gitIsRepo = true
+	a.menuToggleGitPanel()
+	if !a.gitPanel.open || !a.term.open {
+		t.Fatal("left-docked terminal and git panel should coexist")
+	}
+	// Their rects must not overlap: the git panel starts after the strip.
+	gx, _, _, _ := a.gitPanelRect()
+	if gx != a.termStripW() {
+		t.Fatalf("git panel x = %d, want %d (after the strip)", gx, a.termStripW())
+	}
+}
+
+// TestMenuToggleTermDock flips the layout flag, persists it to the
+// user config, and re-imposes bottom-strip exclusivity when the
+// terminal comes back down onto an open git panel.
+func TestMenuToggleTermDock(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	a := newTestApp(t, t.TempDir())
+
+	a.menuToggleTermDock()
+	if !a.termDockLeft {
+		t.Fatal("toggle should flip to left dock")
+	}
+	cfg, err := userconfig.Load(userconfig.DefaultPath())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.TermDock != userconfig.TermDockLeft {
+		t.Fatalf("persisted termdock = %q, want left", cfg.TermDock)
+	}
+
+	// Open both panels in the flipped layout, then flip back: the
+	// bottom strip is single-occupancy again, so the git panel yields.
+	a.term.open = true
+	a.ensureTermSession()
+	a.gitIsRepo = true
+	a.menuToggleGitPanel()
+	if !a.gitPanel.open {
+		t.Fatal("git panel should open alongside a left-docked terminal")
+	}
+	a.menuToggleTermDock()
+	if a.termDockLeft {
+		t.Fatal("second toggle should flip back to bottom dock")
+	}
+	if a.gitPanel.open {
+		t.Fatal("returning the terminal to the bottom must evict the git panel")
+	}
+	cfg, _ = userconfig.Load(userconfig.DefaultPath())
+	if cfg.TermDock != userconfig.TermDockBottom {
+		t.Fatalf("persisted termdock = %q, want bottom", cfg.TermDock)
+	}
+}
+
+// TestTermLeftDockDraw smoke-tests a full draw in the flipped layout —
+// the strip's header title must land on the top row at the left edge,
+// which only happens when termPanelRect really moved.
+func TestTermLeftDockDraw(t *testing.T) {
+	a := newLeftDockApp(t)
+	a.draw()
+	scr := a.screen.(tcell.SimulationScreen)
+	scr.Show()
+	if !screenContainsText(scr, "Terminal") {
+		t.Fatal("left-docked panel header not drawn")
+	}
+	cells, w, _ := scr.GetContents()
+	// Row 0, column 1 onward should carry the " Terminal " title.
+	var b strings.Builder
+	for col := 1; col < 10; col++ {
+		c := cells[0*w+col]
+		if len(c.Runes) > 0 {
+			b.WriteRune(c.Runes[0])
+		}
+	}
+	if !strings.HasPrefix(b.String(), " Terminal") {
+		t.Fatalf("top-left of screen = %q, want the strip header title", b.String())
+	}
 }

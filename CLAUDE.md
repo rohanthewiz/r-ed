@@ -20,8 +20,20 @@ with no CGO.
 
 Users open the action menu (Save, Quit, Show/Hide Sidebar, …) by clicking
 the `≡` icon, right-clicking, or double-tapping `Esc`. There are
-intentionally **no `Ctrl+` shortcuts** for editor actions — they conflict
-with `tmux` and terminal emulators. Don't add them back.
+intentionally **almost no `Ctrl+` shortcuts** for editor actions — they
+conflict with `tmux` and terminal emulators. Don't add more. The one
+sanctioned exception is `Ctrl-D` (duplicate line): it collides with
+nothing (not flow control, not the tmux/zellij prefixes), and the owner
+approved it explicitly. `Alt+Up/Down` (move line) is fine — Alt never
+fights tmux.
+
+**tmux folds Esc sequences into Alt events.** tmux buffers a lone ESC
+for its escape-time (500ms default), so a fast double-Esc reaches tcell
+as one `\x1b\x1b` write → a single `KeyEsc + ModAlt` event, and "Esc,
+s" reaches it as `Alt+s`. handleKey therefore treats Alt+Esc as the
+double-Esc menu toggle and Alt+<bound rune> as that leader. Keep those
+branches — removing them makes the keyboard menu and every leader
+unreachable inside tmux.
 
 **Every file action also lives in the main ≡ menu.** macOS Terminal +
 tmux often swallows Button3 (right-click), so the editor cannot rely on
@@ -51,10 +63,10 @@ internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → au
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
 internal/app/terminal.go      Embedded grsh terminal panel (REPL strip, not a PTY)
-internal/format/              format.json load, trust store, builtin goimports/gofmt
+internal/format/              format.json load, trust store, builtin goimports / gopls imports / gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
-internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader/writer (icons, autosave)
+internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader/writer (icons, autosave, termdock)
 internal/icons/icons.go       Nerd Font detection + per-file glyph mapping
 internal/theme/theme.go       Tokyo Night palette + syntax color mapping
 internal/version/version.go   const Version = "x.y.z" — single line, CI bumps it
@@ -165,16 +177,23 @@ framework dependency. House rules it must keep obeying:
 - Diagnostics are just another `DecorationSource` (registered after
   the git source so the diag gutter dot outranks the git mark).
 - Leaders: Esc-d definition, Esc-i hover, Esc-o jump back.
+- **Absolute paths only**: `New()` absolutizes rootDir and `openFile`
+  absolutizes tab paths. A relative root produces a malformed rootUri
+  and gopls then publishes diagnostics keyed by absolute paths that
+  never match the tabs — the "gopls installed but no squiggles" bug.
 - Tests kill the integration (`a.lsp.dead = true` in newTestApp) so
   openFile can't spawn a real gopls; LSP tests inject `fakeLSPConn`.
 
 ### Format-on-save precedence + builtin Go pass (app/format.go)
 `runFormatOnSave(idx, quiet)` routes: project `format.json` entry
-(trust-gated) → builtin Go goimports/gofmt (`format.BuiltinCommandFor`,
-NO trust prompt — the argv is hardcoded, not repo-supplied) → global-
-defaults install offer. `quiet=true` (auto-save) never opens a modal
-and never flashes; an untrusted config is silently skipped until the
-next explicit Save. Tests stub the app-level `builtinCommandFor` var
+(trust-gated) → builtin Go pass (`format.BuiltinCommandsFor`, NO trust
+prompt — the argvs are hardcoded, not repo-supplied) → global-defaults
+install offer. The builtin pass is a command PIPELINE: goimports alone
+if installed, else `gopls imports -w` chained with `gofmt -w` (a
+machine with gopls but no goimports must not lose auto-imports), else
+gofmt alone. `quiet=true` (auto-save) never opens a modal and never
+flashes; an untrusted config is silently skipped until the next
+explicit Save. Tests stub the app-level `builtinCommandsFor` var
 (newTestApp sets it nil) so saves never exec the dev machine's Go
 tools — keep that in place.
 
@@ -195,10 +214,19 @@ docs/EMBEDDING.md), hosted as a REPL strip. NOT a PTY — do not add
 one, or a VT emulator; full-screen child apps (vim, htop) are out of
 scope by design. House rules:
 
-- **Single-occupancy bottom strip**: the terminal and the git panel
-  swap, never stack (opening one collapses the other). Two resizable
-  strips would need circular height-clamp math on small windows —
-  keep the exclusivity.
+- **Two dock modes, one toggle**: the terminal is a bottom strip by
+  default, or a full-height vertical strip on the LEFT (≡ → "Dock
+  terminal left") — that layout also flips the file tree to the RIGHT
+  edge. `App.termDockLeft` drives it; `leftBlockW`/`rightBlockW` are
+  the geometry pivots every rect helper goes through. Persisted as
+  `"termdock"` in config.json. Bottom mode resizes by header-rule
+  drag (rows); left mode by its vertical splitter (columns).
+- **Single-occupancy bottom strip**: while BOTTOM-docked, the terminal
+  and the git panel swap, never stack (opening one collapses the
+  other). Two resizable bottom strips would need circular height-clamp
+  math on small windows — keep the exclusivity. A LEFT-docked terminal
+  doesn't compete for the bottom, so it coexists with the git panel;
+  flipping back to bottom evicts the git panel.
 - **Focus flag, not a modal**: `term.focused` routes plain editing
   keys to the input line; Esc stays global so leaders and the
   double-Esc menu keep working from inside the terminal. Any click

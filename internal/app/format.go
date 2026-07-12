@@ -61,12 +61,12 @@ type formatDoneEvent struct {
 // When satisfies the tcell.Event interface.
 func (e *formatDoneEvent) When() time.Time { return e.when }
 
-// builtinCommandFor resolves the built-in Go formatter (goimports,
-// falling back to gofmt). A package var so tests can stub it to nil —
-// otherwise every test that saves a .go fixture would shell out to
-// whatever Go tools the dev machine has on PATH, the same reason
-// newTestApp kills the LSP integration.
-var builtinCommandFor = format.BuiltinCommandFor
+// builtinCommandsFor resolves the built-in Go formatter pipeline
+// (goimports, else gopls imports + gofmt, else gofmt). A package var
+// so tests can stub it to nil — otherwise every test that saves a .go
+// fixture would shell out to whatever Go tools the dev machine has on
+// PATH, the same reason newTestApp kills the LSP integration.
+var builtinCommandsFor = format.BuiltinCommandsFor
 
 // runFormatOnSave is called after a successful disk write — by
 // saveTabAt for explicit saves (quiet=false) and by autoSaveTab for
@@ -119,8 +119,8 @@ func (a *App) runFormatOnSave(idx int, quiet bool) {
 	// overrides it) and the install offer (which it makes redundant
 	// for Go — offering to install a gofmt default when the builtin
 	// already runs one would be a nag with no upside).
-	if builtin := builtinCommandFor(tab.Path); builtin != nil {
-		a.execFormatter(tab.Path, builtin, quiet)
+	if builtin := builtinCommandsFor(tab.Path); len(builtin) > 0 {
+		a.execFormatterChain(tab.Path, builtin, quiet)
 		return
 	}
 
@@ -374,26 +374,50 @@ func (a *App) execFormatter(tabPath string, argv []string, quiet bool) {
 	if len(argv) == 0 {
 		return
 	}
+	a.execFormatterChain(tabPath, [][]string{argv}, quiet)
+}
+
+// execFormatterChain runs a pipeline of formatter argvs sequentially in
+// one goroutine, posting a single formatDoneEvent when the chain
+// completes (or on the first failure — later stages must not run over
+// a file an earlier stage rejected). Exists for the builtin
+// gopls-imports-then-gofmt pair; the single-command paths flow through
+// it via execFormatter so there is exactly one exec + event wiring.
+func (a *App) execFormatterChain(tabPath string, cmds [][]string, quiet bool) {
+	if len(cmds) == 0 || len(cmds[0]) == 0 {
+		return
+	}
 	scr := a.screen
 	// Base name only: the builtin path hands us a fully-resolved
 	// binary (/opt/…/goimports) and status flashes read better as
 	// just the tool name. Config-supplied bare names pass through
 	// unchanged.
-	label := filepath.Base(argv[0])
+	label := filepath.Base(cmds[0][0])
 	if !quiet {
 		a.flash(label + "…")
 	}
 	go func() {
-		cmd := exec.Command(argv[0], argv[1:]...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
+		var err error
+		for _, argv := range cmds {
+			if len(argv) == 0 {
+				continue
+			}
+			cmd := exec.Command(argv[0], argv[1:]...)
+			var out []byte
+			out, err = cmd.CombinedOutput()
+			if err == nil {
+				continue
+			}
 			// Distinguish "binary not installed" from "formatter ran
-			// but failed" — the first is a silent skip (per the spec),
-			// the second is a status flash so the user sees breakage.
+			// but failed" — the first is a silent skip (per the spec)
+			// that still lets the rest of the chain run, the second is
+			// a status flash so the user sees breakage.
 			var pathErr *exec.Error
 			if errors.As(err, &pathErr) && errors.Is(pathErr.Err, exec.ErrNotFound) {
 				err = nil
-			} else if len(out) > 0 {
+				continue
+			}
+			if len(out) > 0 {
 				preview := string(out)
 				if i := indexNewline(preview); i >= 0 {
 					preview = preview[:i]
@@ -403,6 +427,7 @@ func (a *App) execFormatter(tabPath string, argv []string, quiet bool) {
 				}
 				err = fmt.Errorf("%v: %s", err, preview)
 			}
+			break
 		}
 		_ = scr.PostEvent(&formatDoneEvent{
 			when:    time.Now(),

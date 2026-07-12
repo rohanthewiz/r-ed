@@ -44,6 +44,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rohanthewiz/grsh"
+
+	"github.com/rohanthewiz/r-ed/internal/userconfig"
 )
 
 const (
@@ -60,7 +62,15 @@ const (
 
 	// termPanelResizeStep is the Esc-= / Esc-- growth per press while
 	// the terminal (rather than the git panel) owns the bottom strip.
+	// In the left-dock layout the same step applies to columns.
 	termPanelResizeStep = 2
+
+	// termPanelMinWidth keeps a left-docked strip usable — enough
+	// columns for a prompt plus a short command. There is no max
+	// constant: the ceiling is derived live from the window so the
+	// editor always keeps minEditorAfterDrag columns (see
+	// maxTermPanelWidth).
+	termPanelMinWidth = 24
 
 	// termScrollbackMax bounds the in-memory scrollback. Beyond it the
 	// oldest lines fall off — a build spewing megabytes must not grow
@@ -123,8 +133,14 @@ type termPanelState struct {
 
 	// height is the user-chosen row count from a header drag or the
 	// resize leaders; 0 means "auto" (a third of the screen). Session-
-	// only, like the git panel and sidebarWidth.
+	// only, like the git panel and sidebarWidth. Applies while the
+	// panel is bottom-docked.
 	height int
+
+	// width is the left-dock twin of height: user-chosen column count
+	// from a splitter drag or the resize leaders, 0 for "auto" (a
+	// third of the screen width). Session-only.
+	width int
 
 	sess   termEvaluator
 	writer *termWriter
@@ -224,9 +240,48 @@ func (a *App) menuToggleTerminal() {
 	a.term.open = !a.term.open
 	a.term.focused = a.term.open
 	if a.term.open {
-		a.gitPanel.open = false // single-occupancy bottom strip
+		// Single-occupancy bottom strip — only applies while the
+		// terminal actually competes for the bottom; a left-docked
+		// strip coexists with the git panel.
+		if !a.termDockLeft {
+			a.gitPanel.open = false
+		}
 		a.ensureTermSession()
 	}
+}
+
+// menuToggleTermDock flips the terminal between the classic bottom
+// strip and the left-docked vertical strip (which also sends the file
+// tree to the right edge), persisting the choice like the auto-save
+// toggle does. Re-entering the bottom layout restores the strip's
+// single-occupancy rule, so an open git panel yields.
+func (a *App) menuToggleTermDock() {
+	a.closeMenu()
+	a.termDockLeft = !a.termDockLeft
+	if !a.termDockLeft && a.term.open {
+		a.gitPanel.open = false
+	}
+	if a.termDockLeft {
+		a.flash("Terminal docks left · file tree on the right")
+	} else {
+		a.flash("Terminal docks at the bottom · file tree on the left")
+	}
+	dock := userconfig.TermDockBottom
+	if a.termDockLeft {
+		dock = userconfig.TermDockLeft
+	}
+	if err := userconfig.SaveTermDock(userconfig.DefaultPath(), dock); err != nil {
+		a.flash("config: " + err.Error())
+	}
+}
+
+// termDockToggleLabel names the layout the toggle will switch TO —
+// the same action-not-state convention as the other toggle rows.
+func (a *App) termDockToggleLabel() string {
+	if a.termDockLeft {
+		return "Dock terminal at bottom"
+	}
+	return "Dock terminal left (tree right)"
 }
 
 // leaderTerminal is the Esc-` binding: an open-but-unfocused panel
@@ -622,17 +677,26 @@ func (a *App) dragTermPanelTo(y int) {
 
 // growTermPanel / shrinkTermPanel let Esc-= / Esc-- resize whichever
 // bottom panel is open (the git panel handlers no-op when it's the
-// terminal's turn, and vice versa).
+// terminal's turn, and vice versa). A left-docked strip grows in
+// columns instead of rows — the leader keeps meaning "more terminal".
 func (a *App) growTermPanel() {
 	if !a.term.open {
+		return
+	}
+	if a.termDockLeft {
+		a.resizeTermPanelWidth(a.termPanelWidth() + termPanelResizeStep)
 		return
 	}
 	a.resizeTermPanel(a.termPanelHeight() + termPanelResizeStep)
 }
 
-// shrinkTermPanel steps the panel shorter; see growTermPanel.
+// shrinkTermPanel steps the panel shorter / narrower; see growTermPanel.
 func (a *App) shrinkTermPanel() {
 	if !a.term.open {
+		return
+	}
+	if a.termDockLeft {
+		a.resizeTermPanelWidth(a.termPanelWidth() - termPanelResizeStep)
 		return
 	}
 	a.resizeTermPanel(a.termPanelHeight() - termPanelResizeStep)
@@ -653,16 +717,88 @@ func (a *App) shrinkBottomPanel() {
 	a.shrinkTermPanel()
 }
 
-// termPanelRect returns the panel's on-screen rectangle: editor-width,
-// directly above the find bar (when open) and the status bar.
+// termStripW is the total column count a left-docked terminal strip
+// consumes (panel + its splitter column): zero when the panel is
+// closed or bottom-docked. The layout helpers pivot on this the way
+// they pivot on sidebarW.
+func (a *App) termStripW() int {
+	if !a.termDockLeft || !a.term.open {
+		return 0
+	}
+	return a.termPanelWidth()
+}
+
+// termSplitterX returns the left-docked strip's resize handle column
+// (its rightmost cell), or -1 when there is no vertical strip to
+// resize — mirroring splitterX's contract for the sidebar.
+func (a *App) termSplitterX() int {
+	if sw := a.termStripW(); sw > 0 {
+		return sw - 1
+	}
+	return -1
+}
+
+// termPanelWidth returns the left-docked strip's column count for the
+// current window: user width wins, auto mode takes a third of the
+// screen, both re-clamped live so a terminal resize can't squeeze the
+// editor out. The width twin of termPanelHeight.
+func (a *App) termPanelWidth() int {
+	w := a.term.width
+	if w == 0 {
+		w = a.width / 3
+	}
+	if w < termPanelMinWidth {
+		w = termPanelMinWidth
+	}
+	if max := a.maxTermPanelWidth(); w > max {
+		w = max
+	}
+	return w
+}
+
+// maxTermPanelWidth is the widest the left-docked strip may grow while
+// the editor keeps its minimum working columns next to the sidebar.
+func (a *App) maxTermPanelWidth() int {
+	max := a.width - a.sidebarW() - minEditorAfterDrag
+	if max < termPanelMinWidth {
+		max = termPanelMinWidth
+	}
+	return max
+}
+
+// resizeTermPanelWidth records a user-chosen strip width, clamped to
+// the legal band — the splitter-drag twin of resizeTermPanel.
+func (a *App) resizeTermPanelWidth(target int) {
+	if target < termPanelMinWidth {
+		target = termPanelMinWidth
+	}
+	if max := a.maxTermPanelWidth(); target > max {
+		target = max
+	}
+	atBottom := a.termAtBottom()
+	a.term.width = target
+	a.termPanelScroll(0) // re-clamp against the (unchanged) row count
+	if atBottom {
+		a.term.scroll = a.termMaxScroll()
+	}
+}
+
+// termPanelRect returns the panel's on-screen rectangle. Bottom dock:
+// editor-width, directly above the find bar (when open) and the status
+// bar. Left dock: a full-height strip on the left edge, one column
+// narrower than the strip — the rightmost column belongs to the
+// splitter, same convention as sidebarRect.
 func (a *App) termPanelRect() (x, y, w, h int) {
-	sw := a.sidebarW()
+	if a.termDockLeft {
+		return 0, 0, a.termStripW() - 1, a.height - 1
+	}
+	sw := a.leftBlockW()
 	h = a.termPanelHeight()
 	y = a.height - 1 - h
 	if a.findOpen {
 		y -= findBarHeight
 	}
-	return sw, y, a.width - sw, h
+	return sw, y, a.width - sw - a.rightBlockW(), h
 }
 
 // termPanelContains reports whether (x, y) falls inside the open panel.
@@ -723,8 +859,14 @@ func (a *App) termTitleCwd(maxW int) string {
 	if a.term.sess == nil {
 		return ""
 	}
+	// A narrow strip (the left dock can shrink to termPanelMinWidth)
+	// may leave no room at all — drop the cwd entirely rather than
+	// letting an untruncatable string paint past the panel edge.
+	if maxW < 4 {
+		return ""
+	}
 	cwd := abbrevHomePath(a.term.sess.Cwd())
-	if runeLen(cwd) > maxW && maxW > 1 {
+	if runeLen(cwd) > maxW {
 		r := []rune(cwd)
 		cwd = "…" + string(r[len(r)-maxW+1:])
 	}
@@ -784,7 +926,7 @@ func (a *App) termPanelPress(x, y int) (startDrag bool) {
 		return false
 	}
 	_, py, _, _ := a.termPanelRect()
-	if y == py {
+	if y == py && !a.termDockLeft {
 		return true // header rule outside the buttons: grab handle
 	}
 	a.term.focused = true

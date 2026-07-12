@@ -49,6 +49,7 @@ const (
 	undoGroupBackspace                   // a single char was removed before the cursor.
 	undoGroupDelete                      // a single char was removed after the cursor.
 	undoGroupStructural                  // paste, Enter, delete-selection, etc.
+	undoGroupLineMove                    // Alt-Up/Down line shifts — a nudge burst is one step.
 )
 
 // snapshot captures everything needed to reproduce the editor's content
