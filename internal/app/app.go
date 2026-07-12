@@ -179,6 +179,15 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Close tab", action: (*App).menuClose, enabled: (*App).hasTab},
 			{action: (*App).menuToggleAutoSave, enabled: alwaysTrue, labelFor: (*App).autoSaveToggleLabel},
 		},
+		// View toggles. Deliberately the second group: the menu outgrows
+		// short windows and scrolls, so anything living near the bottom
+		// is effectively hidden — and Show terminal is reached for far
+		// too often to bury. Keep these rows above the fold.
+		{
+			{action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
+			{action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
+			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
+		},
 		// History
 		{
 			{label: "Undo", action: (*App).menuUndo, enabled: (*App).hasUndo},
@@ -233,12 +242,6 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Duplicate line", action: (*App).menuDuplicateLines, enabled: (*App).hasEditableTab},
 			{label: "Move line up", action: (*App).menuMoveLinesUp, enabled: (*App).hasEditableTab},
 			{label: "Move line down", action: (*App).menuMoveLinesDown, enabled: (*App).hasEditableTab},
-		},
-		// View toggle
-		{
-			{action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
-			{action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
-			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
 		},
 		// Quit
 		{

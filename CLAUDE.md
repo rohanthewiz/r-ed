@@ -220,7 +220,13 @@ scope by design. House rules:
   edge. `App.termDockLeft` drives it; `leftBlockW`/`rightBlockW` are
   the geometry pivots every rect helper goes through. Persisted as
   `"termdock"` in config.json. Bottom mode resizes by header-rule
-  drag (rows); left mode by its vertical splitter (columns).
+  drag (rows); left mode by its vertical splitter (columns). The dock
+  toggle also OPENS a closed terminal — flipping the layout must never
+  leave nothing where the terminal should be (that reads as the layout
+  breaking, not a mode change). Keep the Show/Hide terminal and dock
+  rows in the View-toggles group near the TOP of the ≡ menu — the menu
+  scrolls on short windows and these rows must stay above the fold
+  (pinned by `TestMenuLayout_TerminalRowsAboveTheFold`).
 - **Single-occupancy bottom strip**: while BOTTOM-docked, the terminal
   and the git panel swap, never stack (opening one collapses the
   other). Two resizable bottom strips would need circular height-clamp

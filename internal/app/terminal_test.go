@@ -861,6 +861,9 @@ func TestMenuToggleTermDock(t *testing.T) {
 	if !a.termDockLeft {
 		t.Fatal("toggle should flip to left dock")
 	}
+	if !a.term.open {
+		t.Fatal("flipping the dock should open a closed terminal")
+	}
 	cfg, err := userconfig.Load(userconfig.DefaultPath())
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -869,10 +872,9 @@ func TestMenuToggleTermDock(t *testing.T) {
 		t.Fatalf("persisted termdock = %q, want left", cfg.TermDock)
 	}
 
-	// Open both panels in the flipped layout, then flip back: the
-	// bottom strip is single-occupancy again, so the git panel yields.
-	a.term.open = true
-	a.ensureTermSession()
+	// Open the git panel alongside in the flipped layout, then flip
+	// back: the bottom strip is single-occupancy again, so the git
+	// panel yields.
 	a.gitIsRepo = true
 	a.menuToggleGitPanel()
 	if !a.gitPanel.open {
@@ -889,6 +891,100 @@ func TestMenuToggleTermDock(t *testing.T) {
 	if cfg.TermDock != userconfig.TermDockBottom {
 		t.Fatalf("persisted termdock = %q, want bottom", cfg.TermDock)
 	}
+}
+
+// TestMenuToggleTermDockOpensClosedTerminal pins the fix for "dock
+// terminal left flips the tree to the right but nothing shows on the
+// left": picking a dock is a put-the-terminal-THERE gesture, so a
+// closed terminal must open (and focus) as part of the flip — in both
+// directions. Flipping to the bottom additionally evicts the git panel
+// (single-occupancy strip).
+func TestMenuToggleTermDockOpensClosedTerminal(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newTestApp(t, t.TempDir())
+
+	a.menuToggleTermDock() // → left, terminal was closed
+	if !a.term.open || !a.term.focused {
+		t.Fatalf("open=%v focused=%v after left flip — want an open, focused terminal", a.term.open, a.term.focused)
+	}
+	if a.termStripW() <= 0 {
+		t.Fatal("left flip should yield a visible strip")
+	}
+
+	// Close it, open the git panel, flip back down: the terminal
+	// reopens at the bottom and reclaims the strip from the git panel.
+	a.menuToggleTerminal()
+	a.gitIsRepo = true
+	a.gitPanel.open = true
+	a.menuToggleTermDock() // → bottom
+	if !a.term.open {
+		t.Fatal("flipping back to bottom should reopen a closed terminal")
+	}
+	if a.gitPanel.open {
+		t.Fatal("bottom flip must evict the git panel (single-occupancy strip)")
+	}
+}
+
+// TestTermDockLeftMenuFlow drives the reported user journey end to end
+// through real mouse events against the drawn screen: flip the dock via
+// the ≡ menu, then verify the strip really renders on the left with the
+// tree on the right — the click dispatch, layout flag, open state, and
+// draw must all agree.
+func TestTermDockLeftMenuFlow(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newTestApp(t, t.TempDir())
+
+	a.openMenu()
+	clickMenuRowByLabel(t, a, "Dock terminal left (tree right)")
+	if !a.termDockLeft || !a.term.open {
+		t.Fatalf("dockLeft=%v open=%v after menu flip — want both true", a.termDockLeft, a.term.open)
+	}
+
+	a.draw()
+	scr := a.screen.(tcell.SimulationScreen)
+	scr.Show()
+	cells, w, _ := scr.GetContents()
+	var row0 strings.Builder
+	for x := range w {
+		if c := cells[x]; len(c.Runes) > 0 {
+			row0.WriteRune(c.Runes[0])
+		}
+	}
+	if !strings.Contains(row0.String(), " Terminal ") {
+		t.Fatalf("row 0 = %q — left strip header not drawn", row0.String())
+	}
+	sx, _, _, _ := a.sidebarRect()
+	if sx <= a.width/2 {
+		t.Fatalf("sidebar x = %d — tree should be docked on the right half", sx)
+	}
+}
+
+// clickMenuRowByLabel scrolls the open menu until the row whose dynamic
+// label matches is inside the visible band, then clicks it through the
+// real handleMouse path — so the test exercises the same scroll-aware
+// hit-testing the user's click goes through.
+func clickMenuRowByLabel(t *testing.T, a *App, label string) {
+	t.Helper()
+	items, _, _ := a.menuLayout()
+	for i, item := range items {
+		got := item.label
+		if item.labelFor != nil {
+			got = item.labelFor(a)
+		}
+		if got != label {
+			continue
+		}
+		// Scroll the row into the visible band, then click the cell
+		// where drawMenu would paint it.
+		a.hoveredMenuRow = i
+		a.menuEnsureHoveredVisible()
+		mx, my, _, _ := a.menuModalRect()
+		y := my + item.relY - a.menuScrollOffset()
+		a.handleMouse(tcell.NewEventMouse(mx+4, y, tcell.Button1, tcell.ModNone))
+		a.handleMouse(tcell.NewEventMouse(mx+4, y, tcell.ButtonNone, tcell.ModNone))
+		return
+	}
+	t.Fatalf("menu row %q not found", label)
 }
 
 // TestTermLeftDockDraw smoke-tests a full draw in the flipped layout —

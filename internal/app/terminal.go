@@ -258,7 +258,17 @@ func (a *App) menuToggleTerminal() {
 func (a *App) menuToggleTermDock() {
 	a.closeMenu()
 	a.termDockLeft = !a.termDockLeft
-	if !a.termDockLeft && a.term.open {
+	// Picking a dock is a "put the terminal THERE" gesture, so a closed
+	// terminal opens as part of the flip. Without this, flipping to the
+	// left dock just teleports the file tree to the right edge and shows
+	// nothing on the left — which reads as the layout breaking, not as a
+	// mode change waiting for a separate Show terminal.
+	if !a.term.open {
+		a.term.open = true
+		a.term.focused = true
+		a.ensureTermSession()
+	}
+	if !a.termDockLeft {
 		a.gitPanel.open = false
 	}
 	if a.termDockLeft {

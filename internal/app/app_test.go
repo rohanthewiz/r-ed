@@ -1809,13 +1809,38 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 	if got := len(items); got != 45 {
 		t.Errorf("item count = %d, want 45 built-ins", got)
 	}
-	wantDiv := []int{2, 7, 11, 15, 25, 29, 42, 50, 54}
+	wantDiv := []int{2, 7, 11, 15, 19, 29, 33, 46, 54}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
 	for i, d := range wantDiv {
 		if dividers[i] != d {
 			t.Errorf("dividers[%d] = %d, want %d", i, dividers[i], d)
+		}
+	}
+}
+
+// TestMenuLayout_TerminalRowsAboveTheFold pins the View-toggles group's
+// promoted position: the menu outgrows short windows and scrolls, so the
+// terminal rows must sit high enough to be visible with zero scroll even
+// on a 24-row terminal (visible band is relY 3..mh-2). Guards against a
+// reorder quietly burying Show terminal again.
+func TestMenuLayout_TerminalRowsAboveTheFold(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	items, _, _ := a.menuLayout()
+	for _, want := range []string{"Show terminal", "Dock terminal left (tree right)"} {
+		found := false
+		for _, item := range items {
+			if item.labelFor == nil || item.labelFor(a) != want {
+				continue
+			}
+			found = true
+			if item.relY > 22 {
+				t.Errorf("%q at relY %d — hidden without scrolling on a 24-row window", want, item.relY)
+			}
+		}
+		if !found {
+			t.Errorf("menu row %q not found", want)
 		}
 	}
 }
