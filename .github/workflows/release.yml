@@ -5,41 +5,40 @@
 # Copyright: 2026 Cloudmanic, LLC. All rights reserved.
 # =============================================================================
 #
-# Release pipeline for r-ed. Triggers on every push to main:
+# Release pipeline for r-ed. Triggers on every push to the `release`
+# branch (cut it from main when you want to ship):
 #
 #   1. Determines the next version. If the pushed commit hand-edited
 #      internal/version/version.go (you bumped major/minor manually), the
 #      workflow uses that version as-is. Otherwise it auto-bumps the patch
-#      number, commits the change back to main with [skip ci], and pushes.
+#      number, commits the change back to `release` with [skip ci], and
+#      pushes.
 #   2. Tags v<x.y.z> and pushes the tag.
 #   3. Runs goreleaser to cross-compile binaries (linux/darwin/windows ×
 #      amd64/arm64), package them, attach them to a GitHub Release, and
 #      push an updated Homebrew formula into Formula/ in this same repo
 #      (using the default GITHUB_TOKEN — no separate tap repo or PAT
 #      required).
+#
+# main is left untouched by a release run — merge `release` back into
+# main yourself to bring its version.go current.
 
 name: Release
 
-# PAUSED during the spiceedit → r-ed rebrand: the push trigger is
-# disabled so ordinary pushes to main don't cut releases against the
-# renamed module/binary until the new repo identity is verified
-# end-to-end. Re-enable by restoring:
-#
-#   push:
-#     branches: [main]
-#
-# under `on:` below. Until then, releases run only via manual
-# workflow_dispatch — which also remains the escape hatch if a merge
-# commit accidentally carries a skip-CI marker once the push trigger
-# is back.
+# Releases are cut deliberately by pushing to the `release` branch —
+# ordinary pushes to main no longer ship anything. workflow_dispatch
+# remains the manual escape hatch (e.g. to re-run if a merge commit
+# accidentally carries a skip-CI marker).
 on:
+  push:
+    branches: [release]
   workflow_dispatch:
 
-# Pushes back to main need write access to the repo's contents. The
-# `actions: write` scope lets the final step kick off the Pages
-# workflow via workflow_dispatch — the version-bump commit carries
-# [skip ci] so the auto-deploy on internal/version/version.go won't
-# fire on its own.
+# Pushing the version-bump commit + tag back to `release` needs write
+# access to the repo's contents. The `actions: write` scope lets the
+# final step kick off the Pages workflow via workflow_dispatch — the
+# version-bump commit carries [skip ci] so pages.yml's auto-deploy on
+# internal/version/version.go won't fire on its own.
 permissions:
   contents: write
   actions: write
@@ -96,9 +95,9 @@ jobs:
             echo "bumped=true"  >> "$GITHUB_OUTPUT"
           fi
 
-      # Commit the bumped version.go back to main. The [skip ci] marker
-      # in the commit message tells GitHub Actions not to re-run this
-      # workflow (which would loop forever).
+      # Commit the bumped version.go back to `release`. The [skip ci]
+      # marker in the commit message tells GitHub Actions not to re-run
+      # this workflow (which would loop forever).
       - name: Commit version bump
         if: steps.version.outputs.bumped == 'true'
         run: |
@@ -111,7 +110,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add internal/version/version.go
           git commit -m "Release v$NEW [skip ci]"
-          git push origin HEAD:main
+          git push origin HEAD:release
 
       # Always create + push the tag (even when version was hand-edited
       # — that's the whole point of accepting it as-is).
@@ -136,14 +135,15 @@ jobs:
           # no separate tap repo or PAT needed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Kick the Pages deploy explicitly. The version bump and brew
-      # formula commits both carry [skip ci] (otherwise this workflow
-      # would loop on its own pushes), and pages.yml is gated by file
-      # paths — so without this step the marketing site is stranded at
-      # whatever version it last deployed, one bump behind reality.
-      # Uses workflow_dispatch (declared in pages.yml) and runs after
-      # the version push so the deploy reads the just-bumped value.
+      # Kick the Pages deploy explicitly against the release ref. The
+      # version bump and brew formula commits both carry [skip ci]
+      # (otherwise this workflow would loop on its own pushes), and the
+      # bump lands on `release` (not main), so pages.yml's path-filtered
+      # auto-deploy never fires for it. Dispatching on --ref release
+      # rebuilds the site from the exact released commit, so its version
+      # badge matches what users just installed without waiting for a
+      # release → main merge.
       - name: Trigger Pages redeploy
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run pages.yml --ref main
+        run: gh workflow run pages.yml --ref release

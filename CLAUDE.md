@@ -329,17 +329,27 @@ UI behavior, build and run it against a real directory.
 
 ## Releases (don't break this)
 
-Pushes to `main` trigger `.github/workflows/release.yml`:
+Releases are cut deliberately: push to the **`release` branch** (cut it
+from main) and `.github/workflows/release.yml` runs. Ordinary pushes to
+`main` no longer ship anything; `workflow_dispatch` is the manual escape
+hatch. **Pushing `release` is itself the trigger** — expect a real
+release on the very first push.
 
 1. Reads `internal/version/version.go`.
 2. **If that file was edited in the pushed commit**, the version is used
    as-is (manual major/minor bump). **Otherwise** the patch is
-   auto-bumped, committed back to main with `[skip ci]`, and pushed.
+   auto-bumped, committed back to `release` with `[skip ci]`, and pushed.
 3. Tags `v<x.y.z>`.
 4. GoReleaser cross-compiles, attaches archives to a GitHub Release,
    and writes `Formula/r-ed.rb` back into this repo (using the
    default `GITHUB_TOKEN` — no PAT). The formula commit also carries
    `[skip ci]` to break the loop.
+5. Dispatches `pages.yml` on the `release` ref so the marketing site's
+   version badge matches the just-released binary.
+
+`main` is left untouched by a release run — merge `release` back into
+main yourself to bring its `version.go` current (that merge also
+redeploys the site via pages.yml's `version.go` path filter).
 
 If you're touching the workflow or `.goreleaser.yml`, make sure both
 auto-commits keep their `[skip ci]` markers — without them the workflow
