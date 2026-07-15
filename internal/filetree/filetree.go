@@ -58,6 +58,13 @@ type Tree struct {
 	// tree node or opens a file.
 	ActiveFolder string
 
+	// ActiveFile is the absolute path of the file open in the editor's
+	// active tab. Render() draws the matching file row bold so the user
+	// can see at a glance which tree entry they're editing. The app
+	// re-syncs it from the active tab on every draw, so it stays correct
+	// no matter which path switched tabs. Empty when no file is open.
+	ActiveFile string
+
 	// DirtyFiles and DirtyFolders carry the project's git status — both
 	// indexed by absolute path. Files in DirtyFiles render in the theme's
 	// Modified color; folders in DirtyFolders do the same so a collapsed
@@ -279,8 +286,9 @@ func (t *Tree) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 		}
 		item := flat[idx]
 		active := item.Node.IsDir && item.Node.Path == t.ActiveFolder
+		activeFile := !item.Node.IsDir && t.ActiveFile != "" && item.Node.Path == t.ActiveFile
 		dirty := t.isDirty(item.Node)
-		drawNodeRow(scr, th, x, listTop+row, w, item, active, dirty, t.IconsEnabled, t.ExecMarks)
+		drawNodeRow(scr, th, x, listTop+row, w, item, active, activeFile, dirty, t.IconsEnabled, t.ExecMarks)
 		visible = append(visible, item.Node)
 	}
 	t.visible = visible
@@ -303,7 +311,12 @@ func (t *Tree) isDirty(n *Node) bool {
 // drawNodeRow renders one tree row with proper indent, chevron, and color.
 // active=true marks this folder as the editor's current working folder
 // (the New File default), and is drawn bold + accent-tinted so the user
-// can see at a glance where the next "New file" will land. dirty=true
+// can see at a glance where the next "New file" will land. activeFile=true
+// marks the file open in the editor's active tab; it's drawn bold (but
+// keeps its own file/dirty color) so the currently-edited entry stands
+// out without stealing the folder's accent tint. active and activeFile
+// are mutually exclusive (one is folder-only, the other file-only).
+// dirty=true
 // marks the node as having uncommitted git changes (or, for folders,
 // containing some) — it overrides the normal foreground with the
 // theme's Modified color so changed files stand out at a glance.
@@ -320,7 +333,7 @@ func (t *Tree) isDirty(n *Node) bool {
 // styling. That's the visual cue you find in nvim-tree and friends:
 // a quick eye-scan picks out Go from Ruby from Markdown without
 // reading any text.
-func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, active, dirty, withIcons, execMarks bool) {
+func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, active, activeFile, dirty, withIcons, execMarks bool) {
 	bg := th.SidebarBG
 	indent := strings.Repeat("  ", item.Depth)
 
@@ -352,7 +365,7 @@ func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, a
 		fg = th.Modified
 	}
 	rowStyle := tcell.StyleDefault.Background(bg).Foreground(fg)
-	if active {
+	if active || activeFile {
 		rowStyle = rowStyle.Bold(true)
 	}
 
@@ -391,7 +404,7 @@ func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, a
 	// hue is the at-a-glance cue, and the name turning Modified is
 	// already enough to flag "this is dirty".
 	glyphStyle := tcell.StyleDefault.Background(bg).Foreground(glyphFg)
-	if active {
+	if active || activeFile {
 		glyphStyle = glyphStyle.Bold(true)
 	}
 

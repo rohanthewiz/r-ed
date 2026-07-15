@@ -2572,6 +2572,14 @@ func (a *App) draw() {
 	}
 
 	if a.sidebarShown {
+		// Re-sync the active-file highlight from the current tab every
+		// draw so the bold row stays correct no matter which path
+		// switched tabs (open, tab-bar click, close, nav back/forward).
+		if tab := a.activeTabPtr(); tab != nil {
+			a.tree.ActiveFile = tab.Path
+		} else {
+			a.tree.ActiveFile = ""
+		}
 		sx, sy, sw, sh := a.sidebarRect()
 		a.tree.Render(a.screen, a.theme, sx, sy, sw, sh)
 		a.drawSplitter()

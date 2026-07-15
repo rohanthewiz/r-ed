@@ -511,6 +511,57 @@ func TestRender_ActiveFolderIsBold(t *testing.T) {
 	}
 }
 
+// TestRender_ActiveFileIsBold sets ActiveFile to a top-level file's path
+// and checks that its row renders bold while a sibling file does not —
+// the cue that tells the user which tree entry is open in the active tab.
+func TestRender_ActiveFileIsBold(t *testing.T) {
+	root := mkTree(t)
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tr.ActiveFile = findChild(tr.Root, "zeta.txt").Path
+
+	cells, w := renderAndCollect(t, tr, 40, 20)
+
+	activeY := findRowY(cells, w, 20, "zeta.txt")
+	if activeY < 0 {
+		t.Fatal("could not find zeta.txt row")
+	}
+	if !rowHasBold(cells, w, activeY) {
+		t.Fatal("expected zeta.txt row to be bold (active file)")
+	}
+	// A sibling file that isn't the active tab must stay un-bold, so the
+	// cue actually distinguishes the open file.
+	otherY := findRowY(cells, w, 20, "Apple.md")
+	if otherY < 0 {
+		t.Fatal("could not find Apple.md row")
+	}
+	if rowHasBold(cells, w, otherY) {
+		t.Fatal("non-active file Apple.md should not be bold")
+	}
+}
+
+// TestRender_NoActiveFileNoBoldFile verifies that with ActiveFile empty
+// no file row is bolded — the empty path must never match a real node
+// and light up an arbitrary row.
+func TestRender_NoActiveFileNoBoldFile(t *testing.T) {
+	root := mkTree(t)
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tr.ActiveFile = ""
+
+	cells, w := renderAndCollect(t, tr, 40, 20)
+	for _, name := range []string{"zeta.txt", "Apple.md"} {
+		y := findRowY(cells, w, 20, name)
+		if y >= 0 && rowHasBold(cells, w, y) {
+			t.Fatalf("%s should not be bold when ActiveFile is empty", name)
+		}
+	}
+}
+
 // TestRender_TinyHeightDoesNotPanic guards against an off-by-one when the
 // caller hands Render a height smaller than the 2-row header — listH goes
 // to zero and we shouldn't blow up dividing or indexing.
