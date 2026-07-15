@@ -16,6 +16,7 @@ package filetree
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -54,6 +55,16 @@ func mustMkdir(t *testing.T, p string) {
 func mustWrite(t *testing.T, p, contents string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+}
+
+// mustWriteMode is a fail-on-error file-write helper that sets an explicit
+// permission mode — used to exercise the executable-bit detection that
+// drives the ls -F '*' marker.
+func mustWriteMode(t *testing.T, p, contents string, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(contents), mode); err != nil {
 		t.Fatalf("write %s: %v", p, err)
 	}
 }
@@ -845,6 +856,188 @@ func TestRender_IconsEnabledColoursGlyphPerLanguage(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no cell carried glyph %q on inner.go row", string(wantGlyph))
+	}
+}
+
+// TestReload_MarksExecutable verifies reload sets IsExec for a regular
+// file carrying an execute bit while leaving an ordinary file and any
+// directory unmarked — the signal that drives the ls -F '*' marker.
+func TestReload_MarksExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix execute bit on Windows")
+	}
+	root := t.TempDir()
+	mustWriteMode(t, filepath.Join(root, "run.sh"), "#!/bin/sh\n", 0o755)
+	mustWriteMode(t, filepath.Join(root, "notes.txt"), "hi", 0o644)
+	mustMkdir(t, filepath.Join(root, "sub"))
+
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if sh := findChild(tr.Root, "run.sh"); sh == nil || !sh.IsExec {
+		t.Fatalf("run.sh should be marked executable: %+v", sh)
+	}
+	if txt := findChild(tr.Root, "notes.txt"); txt == nil || txt.IsExec {
+		t.Fatalf("notes.txt should not be executable: %+v", txt)
+	}
+	if sub := findChild(tr.Root, "sub"); sub == nil || sub.IsExec {
+		t.Fatalf("directory should never be marked executable: %+v", sub)
+	}
+}
+
+// TestReload_ExecBitUpdatesOnRefresh pins the survivor-update path: a
+// file that gains the execute bit after load (chmod +x) must flip to
+// IsExec on the next refresh even though its *Node pointer is reused —
+// otherwise a freshly-built binary would render without its marker until
+// the editor restarts.
+func TestReload_ExecBitUpdatesOnRefresh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix execute bit on Windows")
+	}
+	root := t.TempDir()
+	p := filepath.Join(root, "tool")
+	mustWriteMode(t, p, "#!/bin/sh\n", 0o644)
+
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	node := findChild(tr.Root, "tool")
+	if node == nil || node.IsExec {
+		t.Fatalf("tool should start non-executable: %+v", node)
+	}
+
+	if err := os.Chmod(p, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	tr.Refresh()
+
+	if findChild(tr.Root, "tool") != node {
+		t.Fatal("tool pointer should survive refresh (identity preservation)")
+	}
+	if !node.IsExec {
+		t.Fatal("tool should be marked executable after chmod +x + refresh")
+	}
+}
+
+// TestRender_ExecutableShowsStarSuffix confirms an executable file's row
+// carries the trailing '*' marker (mirroring a directory's '/') while a
+// plain file's row does not.
+func TestRender_ExecutableShowsStarSuffix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix execute bit on Windows")
+	}
+	root := t.TempDir()
+	mustWriteMode(t, filepath.Join(root, "run.sh"), "#!/bin/sh\n", 0o755)
+	mustWriteMode(t, filepath.Join(root, "plain.txt"), "hi", 0o644)
+
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cells, w := renderAndCollect(t, tr, 40, 20)
+
+	shY := findRowY(cells, w, 20, "run.sh")
+	if shY < 0 {
+		t.Fatal("could not find run.sh row")
+	}
+	if !containsRune(rowText(cells, w, shY), "run.sh*") {
+		t.Fatalf("run.sh row should carry trailing '*': %q", rowText(cells, w, shY))
+	}
+
+	txtY := findRowY(cells, w, 20, "plain.txt")
+	if txtY < 0 {
+		t.Fatal("could not find plain.txt row")
+	}
+	if containsRune(rowText(cells, w, txtY), "plain.txt*") {
+		t.Fatalf("plain.txt row should not carry '*': %q", rowText(cells, w, txtY))
+	}
+}
+
+// TestNew_ExecMarksDefaultOn documents that a freshly built tree shows
+// the '*' marker out of the box; the app stamps the user's config
+// preference over this at startup.
+func TestNew_ExecMarksDefaultOn(t *testing.T) {
+	tr, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !tr.ExecMarks {
+		t.Fatal("New() should default ExecMarks on")
+	}
+}
+
+// TestRender_ExecMarksOffHidesStar verifies the render-time gate: with
+// ExecMarks cleared (the ≡ toggle / config "off"), an executable file's
+// row drops the trailing '*' even though its IsExec bit is still set.
+func TestRender_ExecMarksOffHidesStar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix execute bit on Windows")
+	}
+	root := t.TempDir()
+	mustWriteMode(t, filepath.Join(root, "run.sh"), "#!/bin/sh\n", 0o755)
+
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tr.ExecMarks = false // user turned the marker off
+
+	cells, w := renderAndCollect(t, tr, 40, 20)
+	shY := findRowY(cells, w, 20, "run.sh")
+	if shY < 0 {
+		t.Fatal("could not find run.sh row")
+	}
+	// The node is still executable — only the marker is suppressed.
+	if sh := findChild(tr.Root, "run.sh"); sh == nil || !sh.IsExec {
+		t.Fatalf("run.sh should still be detected executable: %+v", sh)
+	}
+	if containsRune(rowText(cells, w, shY), "run.sh*") {
+		t.Fatalf("run.sh row should drop '*' when ExecMarks is off: %q", rowText(cells, w, shY))
+	}
+}
+
+// TestRender_ExecStarInheritsDirtyColor pins the "marker, not colour"
+// contract: when an executable file is also dirty, its '*' cell is drawn
+// in the Modified colour along with the name — the marker rides the
+// row's own style rather than introducing a competing hue.
+func TestRender_ExecStarInheritsDirtyColor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix execute bit on Windows")
+	}
+	root := t.TempDir()
+	p := filepath.Join(root, "run.sh")
+	mustWriteMode(t, p, "#!/bin/sh\n", 0o755)
+
+	tr, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tr.DirtyFiles = map[string]bool{p: true}
+
+	cells, w := renderAndCollect(t, tr, 40, 20)
+	rowY := findRowY(cells, w, 20, "run.sh")
+	if rowY < 0 {
+		t.Fatal("could not find run.sh row")
+	}
+	// Locate the '*' cell specifically and assert its fg is Modified.
+	want := theme.Default().Modified
+	found := false
+	for x := 0; x < w; x++ {
+		c := cells[rowY*w+x]
+		if len(c.Runes) == 0 || c.Runes[0] != '*' {
+			continue
+		}
+		fg, _, _ := c.Style.Decompose()
+		if fg != want {
+			t.Fatalf("'*' fg = %v, want Modified %v", fg, want)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("no '*' cell found on dirty run.sh row")
 	}
 }
 

@@ -346,3 +346,73 @@ func TestSaveTermDock_RoundTripsAndPreserves(t *testing.T) {
 		t.Fatal("unknown key was dropped by the save round-trip")
 	}
 }
+
+// TestDefaultsExecMarksOn pins the documented default: the executable
+// '*' marker is shown unless the user opts out. Flipping this silently
+// would change the file tree's look for everyone with no config file.
+func TestDefaultsExecMarksOn(t *testing.T) {
+	if !Defaults().ExecMarks {
+		t.Fatal("Defaults().ExecMarks = false, want true")
+	}
+}
+
+// TestLoadExecMarksValues exercises the recognised execmarks values and
+// the absent-field default, mirroring the icons/autosave tables.
+func TestLoadExecMarksValues(t *testing.T) {
+	cases := map[string]bool{
+		`{"execmarks":"on"}`:    true,
+		`{"execmarks":"off"}`:   false,
+		`{"execmarks":" OFF "}`: false, // case/whitespace tolerant
+		`{}`:                    true,  // omitted field keeps the default
+	}
+	for body, want := range cases {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if cfg.ExecMarks != want {
+			t.Errorf("Load(%s).ExecMarks = %v, want %v", body, cfg.ExecMarks, want)
+		}
+	}
+}
+
+// TestLoadExecMarksInvalid mirrors the icons/autosave rule: a typo'd
+// value is an error the caller can flash, not a silent fallback.
+func TestLoadExecMarksInvalid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"execmarks":"sometimes"}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("invalid execmarks value should error")
+	}
+}
+
+// TestSaveExecMarks_RoundTripsAndPreserves saves the preference into a
+// config that already has hand-set keys and verifies both survive — the
+// same unknown-key guarantee SaveAutoSave makes.
+func TestSaveExecMarks_RoundTripsAndPreserves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	seed := "{\n  \"icons\": \"on\",\n  \"future-key\": 42\n}\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveExecMarks(path, false); err != nil {
+		t.Fatalf("SaveExecMarks: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if cfg.ExecMarks || cfg.Icons != IconsOn {
+		t.Fatalf("round trip lost values: execmarks=%v icons=%q", cfg.ExecMarks, cfg.Icons)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "future-key") {
+		t.Fatal("unknown key was dropped by the save round-trip")
+	}
+}

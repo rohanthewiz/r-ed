@@ -23,6 +23,8 @@
 //	{"termdock": "bottom"}  // default; terminal panel is a bottom strip
 //	{"termdock": "left"}    // terminal docks as a vertical strip on the
 //	                        // left; the file tree flips to the right
+//	{"execmarks": "on"}     // default; append an ls -F '*' to executables
+//	{"execmarks": "off"}    // hide the executable marker in the file tree
 //
 // The loader is best-effort the same way customactions is: missing
 // file → defaults, malformed file → error returned for the app to
@@ -76,13 +78,18 @@ type Config struct {
 	// vertical on the left, file tree on the right). Persisted by
 	// the ≡ layout toggle, same as AutoSave.
 	TermDock TermDock
+
+	// ExecMarks controls whether the file tree appends an ls -F style
+	// '*' to executable regular files. Defaults to on. Persisted by the
+	// ≡ view toggle, same as AutoSave.
+	ExecMarks bool
 }
 
 // Defaults returns a Config populated with the values used when no
 // config file is present (or every field in it is blank). Centralised
 // so tests and the loader can't drift from each other.
 func Defaults() Config {
-	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom}
+	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom, ExecMarks: true}
 }
 
 // fileFormat mirrors the on-disk JSON shape. We decode into this and
@@ -92,9 +99,10 @@ func Defaults() Config {
 // field reason: a missing key must mean "keep the default", and JSON
 // false is indistinguishable from absent on a plain bool.
 type fileFormat struct {
-	Icons    string `json:"icons,omitempty"`
-	AutoSave string `json:"autosave,omitempty"`
-	TermDock string `json:"termdock,omitempty"`
+	Icons     string `json:"icons,omitempty"`
+	AutoSave  string `json:"autosave,omitempty"`
+	TermDock  string `json:"termdock,omitempty"`
+	ExecMarks string `json:"execmarks,omitempty"`
 }
 
 // DefaultPath returns the canonical config-file location:
@@ -189,6 +197,20 @@ func Load(path string) (Config, error) {
 			path, TermDockBottom, TermDockLeft, ff.TermDock,
 		)
 	}
+
+	switch strings.ToLower(strings.TrimSpace(ff.ExecMarks)) {
+	case "":
+		// field omitted — keep default
+	case "on":
+		cfg.ExecMarks = true
+	case "off":
+		cfg.ExecMarks = false
+	default:
+		return Defaults(), fmt.Errorf(
+			"%s: execmarks must be \"on\" or \"off\" (got %q)",
+			path, ff.ExecMarks,
+		)
+	}
 	return cfg, nil
 }
 
@@ -206,6 +228,16 @@ func SaveAutoSave(path string, on bool) error {
 // file at path. See saveKey for the round-trip guarantees.
 func SaveTermDock(path string, dock TermDock) error {
 	return saveKey(path, "termdock", string(dock))
+}
+
+// SaveExecMarks persists the executable-marker preference into the
+// config file at path. See saveKey for the round-trip guarantees.
+func SaveExecMarks(path string, on bool) error {
+	val := "on"
+	if !on {
+		val = "off"
+	}
+	return saveKey(path, "execmarks", val)
 }
 
 // saveKey writes one preference into the config file at path,

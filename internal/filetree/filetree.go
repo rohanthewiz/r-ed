@@ -33,6 +33,14 @@ type Node struct {
 	Expanded bool
 	Loaded   bool
 	Children []*Node
+
+	// IsExec marks a regular file that carries an execute bit
+	// (mode&0111). The renderer appends an `ls -F` style '*' to its
+	// name — a marker, not a colour, so it never competes with the
+	// single-slot fg cascade that git-dirty highlighting owns. Always
+	// false for directories (their traversal bit isn't "executable"
+	// in the sense a user reads here) and for non-regular files.
+	IsExec bool
 }
 
 // Tree owns the root node and the most recently rendered flat list of
@@ -65,6 +73,14 @@ type Tree struct {
 	// only the existing chevron (the legacy look) — important for
 	// terminals or fonts that can't render the private-use glyphs.
 	IconsEnabled bool
+
+	// ExecMarks toggles the ls -F style '*' the renderer appends to
+	// executable files. Defaults to on (set by New; overridden by
+	// App.loadUserConfig from config.json's "execmarks" key and the ≡
+	// view toggle). The IsExec bit is still computed on every reload
+	// regardless, so flipping this re-renders instantly without a tree
+	// reload.
+	ExecMarks bool
 }
 
 // New creates a tree rooted at root and pre-loads its top-level children so
@@ -86,7 +102,9 @@ func New(root string) (*Tree, error) {
 	if err := loadChildren(n); err != nil {
 		return nil, err
 	}
-	return &Tree{Root: n}, nil
+	// ExecMarks defaults on so the '*' shows out of the box; the app
+	// stamps the user's config.json preference over this at startup.
+	return &Tree{Root: n, ExecMarks: true}, nil
 }
 
 // loadChildren is the lazy-load entry point used the first time a directory
@@ -122,14 +140,27 @@ func (n *Node) reload() error {
 		if shouldHide(e.Name()) {
 			continue
 		}
+		// Executable bit drives the ls -F '*' marker. Only regular
+		// files qualify — a symlink reports its own (non-regular)
+		// mode, and directories are excluded outright. Recomputed on
+		// every reload so a `chmod +x` surfaces on the next refresh,
+		// including for survivor nodes whose pointer we reuse below.
+		isExec := false
+		if !e.IsDir() {
+			if info, err := e.Info(); err == nil {
+				isExec = info.Mode().IsRegular() && info.Mode()&0o111 != 0
+			}
+		}
 		if old, ok := existing[e.Name()]; ok && old.IsDir == e.IsDir() {
+			old.IsExec = isExec
 			children = append(children, old)
 			continue
 		}
 		children = append(children, &Node{
-			Path:  filepath.Join(n.Path, e.Name()),
-			Name:  e.Name(),
-			IsDir: e.IsDir(),
+			Path:   filepath.Join(n.Path, e.Name()),
+			Name:   e.Name(),
+			IsDir:  e.IsDir(),
+			IsExec: isExec,
 		})
 	}
 	sort.SliceStable(children, func(i, j int) bool {
@@ -249,7 +280,7 @@ func (t *Tree) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 		item := flat[idx]
 		active := item.Node.IsDir && item.Node.Path == t.ActiveFolder
 		dirty := t.isDirty(item.Node)
-		drawNodeRow(scr, th, x, listTop+row, w, item, active, dirty, t.IconsEnabled)
+		drawNodeRow(scr, th, x, listTop+row, w, item, active, dirty, t.IconsEnabled, t.ExecMarks)
 		visible = append(visible, item.Node)
 	}
 	t.visible = visible
@@ -278,7 +309,10 @@ func (t *Tree) isDirty(n *Node) bool {
 // theme's Modified color so changed files stand out at a glance.
 // withIcons=true prefixes the name with a Nerd Font glyph + space; off
 // renders the legacy chevron-only look for terminals that can't show
-// the private-use glyphs.
+// the private-use glyphs. When execMarks=true an executable regular
+// file additionally gets a trailing '*' (ls -F style, mirroring a
+// directory's '/'), drawn in the row's own colour so it never competes
+// with the git-dirty highlight.
 //
 // When icons are enabled the row is rendered in three segments
 // (prefix → glyph → name) so the glyph can take its own per-language
@@ -286,7 +320,7 @@ func (t *Tree) isDirty(n *Node) bool {
 // styling. That's the visual cue you find in nvim-tree and friends:
 // a quick eye-scan picks out Go from Ruby from Markdown without
 // reading any text.
-func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, active, dirty, withIcons bool) {
+func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, active, dirty, withIcons, execMarks bool) {
 	bg := th.SidebarBG
 	indent := strings.Repeat("  ", item.Depth)
 
@@ -336,6 +370,14 @@ func drawNodeRow(scr tcell.Screen, th theme.Theme, x, y, w int, item flatNode, a
 	} else {
 		prefix = " " + indent + "  "
 		suffix = item.Node.Name
+		// ls -F style marker: an executable file gets a trailing '*',
+		// mirroring the directory's '/'. It rides the row's own style
+		// so it inherits the dirty/muted/normal fg — deliberately NOT
+		// a new colour, which would collide with the git palette.
+		// Gated on execMarks so the ≡ view toggle can hide it.
+		if execMarks && item.Node.IsExec {
+			suffix += "*"
+		}
 	}
 
 	if !withIcons {

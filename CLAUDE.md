@@ -67,7 +67,7 @@ internal/app/terminal.go      Embedded grsh terminal panel (REPL strip, not a PT
 internal/format/              format.json load, trust store, builtin goimports / gopls imports / gofmt
 internal/filetree/filetree.go Lazy tree, identity-preserving refresh, hit-test, render
 internal/clipboard/clipboard.go OSC 52 to /dev/tty with tmux passthrough wrap
-internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader/writer (icons, autosave, termdock)
+internal/userconfig/userconfig.go ~/.config/r-ed/config.json loader/writer (icons, autosave, termdock, execmarks)
 internal/icons/icons.go       Nerd Font detection + per-file glyph mapping
 internal/theme/theme.go       Tokyo Night palette + syntax color mapping
 internal/version/version.go   const Version = "x.y.z" — single line, CI bumps it

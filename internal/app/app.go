@@ -192,6 +192,7 @@ func builtinMenuGroups() [][]menuItemDef {
 		// too often to bury. Keep these rows above the fold.
 		{
 			{shortcut: "esc t", action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
+			{action: (*App).menuToggleExecMarks, enabled: alwaysTrue, labelFor: (*App).execMarksToggleLabel},
 			{shortcut: "esc `", action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
 			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
 		},
@@ -583,6 +584,7 @@ func (a *App) loadUserConfig() {
 	}
 	if a.tree != nil {
 		a.tree.IconsEnabled = icons.Resolve(cfg.Icons)
+		a.tree.ExecMarks = cfg.ExecMarks
 	}
 	a.autoSaveEnabled = cfg.AutoSave
 	a.termDockLeft = cfg.TermDock == userconfig.TermDockLeft
