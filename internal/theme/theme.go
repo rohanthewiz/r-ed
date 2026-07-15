@@ -94,7 +94,7 @@ func Default() Theme {
 		Accent:     tcell.NewRGBColor(0x7a, 0xa2, 0xf7),
 		AccentSoft: tcell.NewRGBColor(0xbb, 0x9a, 0xf7),
 		Selection:  tcell.NewRGBColor(0x33, 0x46, 0x7c),
-		Modified:   tcell.NewRGBColor(0xe0, 0xaf, 0x68),
+		Modified:   tcell.NewRGBColor(0xe5, 0xa2, 0x3c),
 		Error:      tcell.NewRGBColor(0xf7, 0x76, 0x8e),
 
 		// Find. FindMatch is a desaturated amber so it reads as "all
@@ -102,7 +102,7 @@ func Default() Theme {
 		// is full amber — the same shade the dirty indicator uses —
 		// so the active match jumps off the page.
 		FindMatch:   tcell.NewRGBColor(0x6f, 0x52, 0x1f),
-		FindCurrent: tcell.NewRGBColor(0xe0, 0xaf, 0x68),
+		FindCurrent: tcell.NewRGBColor(0xe5, 0xa2, 0x3c),
 
 		// Git gutter — the standard Tokyo Night green / blue / red.
 		GitAdded:    tcell.NewRGBColor(0x9e, 0xce, 0x6a),
