@@ -367,6 +367,13 @@ type App struct {
 	// last-write-wins, like a system clipboard.
 	clipKind clipboardKind
 
+	// pasting is true between a bracketed-paste start and end marker
+	// while an editable tab is the target; pasteBuf accumulates the
+	// content verbatim so it can be spliced in as one InsertString. See
+	// textpaste.go. Both are zero when no paste is in flight.
+	pasting  bool
+	pasteBuf []rune
+
 	statusMsg    string
 	statusUntil  time.Time
 	dragMode     string // "editor" while a drag-select is active.
@@ -517,6 +524,13 @@ func New(rootDir string) (*App, error) {
 		return nil, err
 	}
 	scr.EnableMouse(tcell.MouseButtonEvents | tcell.MouseDragEvents | tcell.MouseMotionEvents)
+	// Bracketed paste: the terminal wraps a paste in start/end markers so
+	// the editor can insert the content verbatim instead of replaying it
+	// as keystrokes (which would rewrite pasted tabs to IndentUnit and run
+	// each rune through the leader table). See textpaste.go. Terminals
+	// that don't support it simply ignore the enable sequence — the paste
+	// then arrives as raw keys, the same as before, so it degrades safely.
+	scr.EnablePaste()
 
 	th := theme.Default()
 	scr.SetStyle(tcell.StyleDefault.Background(th.BG).Foreground(th.Text))
@@ -691,6 +705,8 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.screen.Sync()
 	case *tcell.EventKey:
 		a.handleKey(e)
+	case *tcell.EventPaste:
+		a.handlePaste(e)
 	case *tcell.EventMouse:
 		a.handleMouse(e)
 	case *autoScrollEvent:
@@ -1167,6 +1183,14 @@ func (a *App) menuEnsureHoveredVisible() {
 // only "command" key is Esc, which closes the menu and acts as the leader
 // for the hotkey table in leader.go (Esc s = Save, Esc u = Undo, etc.).
 func (a *App) handleKey(ev *tcell.EventKey) {
+	// While a bracketed paste is in flight the content arrives as key
+	// events between the start/end markers. Divert them into the paste
+	// buffer verbatim instead of interpreting them as shortcuts, leaders,
+	// or IndentUnit-expanded tabs. See textpaste.go.
+	if a.pasting {
+		a.accumulatePaste(ev)
+		return
+	}
 	// The active modal owns the keyboard while it's up. Each handler
 	// understands Esc (cancel), Enter (submit / activate), and the keys
 	// relevant to its layout (text editing for the prompt, arrow keys for
