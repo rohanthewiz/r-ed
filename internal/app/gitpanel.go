@@ -140,7 +140,11 @@ type gitPanelState struct {
 	// height is the user-chosen row count from a header drag or the
 	// resize leaders; 0 means "auto" (a third of the screen). Session-
 	// only, like sidebarWidth — r-ed deliberately has no layout config.
-	height     int
+	height int
+	// listWidth is the user-chosen file-list column count from a
+	// list/diff divider drag; 0 means "auto" (a third of the panel).
+	// The horizontal twin of height, same session-only lifetime.
+	listWidth  int
 	files      []gitPanelFile
 	selected   int
 	listScroll int
@@ -476,11 +480,16 @@ func (a *App) gitPanelRect() (x, y, w, h int) {
 	return lw, y, a.width - lw - a.rightBlockW(), h
 }
 
-// gitPanelListWidth returns the file-list column width for a panel of
-// total width w — a third of the panel, clamped, and never so wide
-// that the diff pane loses its minimum readable share.
-func gitPanelListWidth(w int) int {
-	lw := w / 3
+// gitPanelListWidth clamps a desired file-list column width for a panel
+// of total width w into the legal band: at least gitPanelMinListW, at
+// most gitPanelMaxListW, and never past half the panel so the diff pane
+// keeps its readable share. A desired <= 0 means "auto" — a third of the
+// panel. The half-panel cap is applied last so it wins on narrow strips.
+func gitPanelListWidth(w, desired int) int {
+	lw := desired
+	if lw <= 0 {
+		lw = w / 3
+	}
 	if lw < gitPanelMinListW {
 		lw = gitPanelMinListW
 	}
@@ -491,6 +500,42 @@ func gitPanelListWidth(w int) int {
 		lw = max
 	}
 	return lw
+}
+
+// gitPanelListW returns the effective file-list column width for a panel
+// of total width pw: the user's chosen width from a divider drag, or the
+// auto third when listWidth is 0 — clamped either way. The single source
+// every draw / hit-test / resize path consults so they can't drift.
+func (a *App) gitPanelListW(pw int) int {
+	return gitPanelListWidth(pw, a.gitPanel.listWidth)
+}
+
+// gitPanelDividerX returns the screen column of the file-list/diff
+// divider — the draggable resize handle between the two panes — or -1
+// when the panel is closed. Mirrors splitterX's contract for the sidebar.
+func (a *App) gitPanelDividerX() int {
+	if !a.gitPanel.open {
+		return -1
+	}
+	px, _, pw, _ := a.gitPanelRect()
+	return px + a.gitPanelListW(pw)
+}
+
+// dragGitListDivTo resizes the file-list column so the divider tracks the
+// mouse x during a drag — the internal-seam twin of dragGitPanelTo, glued
+// to the cursor the same way the sidebar splitter is.
+func (a *App) dragGitListDivTo(x int) {
+	px, _, _, _ := a.gitPanelRect()
+	a.resizeGitPanelListWidth(x - px)
+}
+
+// resizeGitPanelListWidth records a user-chosen file-list column width,
+// clamped to the legal band for the current panel width. Width doesn't
+// change the visible row count, so unlike resizeGitPanel it leaves the
+// scroll offsets alone.
+func (a *App) resizeGitPanelListWidth(target int) {
+	_, _, pw, _ := a.gitPanelRect()
+	a.gitPanel.listWidth = gitPanelListWidth(pw, target)
 }
 
 // gitPanelCloseRect returns the ✕ collapse button's rectangle in the
@@ -554,16 +599,21 @@ func (a *App) gitPanelEnsureSelectedVisible() {
 // -----------------------------------------------------------------------------
 
 // gitPanelPress routes an initial left press inside the panel and
-// reports whether it started a header resize drag (the caller flips
-// dragMode). The ✕ still collapses; anywhere else on the header rule
-// is the grab handle.
-func (a *App) gitPanelPress(x, y int) (startDrag bool) {
+// reports the drag it started, if any, as a dragMode string the caller
+// hands straight to a.dragMode ("" for none). The header rule outside
+// the ✕ is the height handle ("gitpanel"); the list/diff divider column
+// on any body row is the width handle ("gitlistdiv"); the ✕ collapses;
+// everything else is a plain click.
+func (a *App) gitPanelPress(x, y int) (dragMode string) {
 	_, py, _, _ := a.gitPanelRect()
 	if y == py && !a.gitPanelCloseRect().contains(x, y) {
-		return true
+		return "gitpanel"
+	}
+	if y > py && x == a.gitPanelDividerX() {
+		return "gitlistdiv"
 	}
 	a.gitPanelClick(x, y)
-	return false
+	return ""
 }
 
 // gitPanelClick routes a left press inside the panel: the header's ✕
@@ -579,7 +629,7 @@ func (a *App) gitPanelClick(x, y int) {
 	if y == py {
 		return // header row outside the ✕ (drag is handled in gitPanelPress)
 	}
-	if x >= px+gitPanelListWidth(pw) {
+	if x >= px+a.gitPanelListW(pw) {
 		// Diff pane: single clicks are inert, a double-click jumps.
 		// Reuses the editor's lastClick record + window so the two
 		// double-click gestures feel identical.
@@ -706,7 +756,7 @@ func diffTargetLine(lines []string, idx int) (int, bool) {
 // over: file list on the left, diff text on the right.
 func (a *App) gitPanelScroll(x, _, delta int) {
 	px, _, pw, _ := a.gitPanelRect()
-	if x < px+gitPanelListWidth(pw) {
+	if x < px+a.gitPanelListW(pw) {
 		a.gitPanel.listScroll += delta
 	} else {
 		a.gitPanel.diffScroll += delta
@@ -723,7 +773,7 @@ func (a *App) gitPanelScroll(x, _, delta int) {
 // unified-diff coloring.
 func (a *App) drawGitPanel() {
 	px, py, pw, ph := a.gitPanelRect()
-	listW := gitPanelListWidth(pw)
+	listW := a.gitPanelListW(pw)
 	th := a.theme
 
 	headerSt := tcell.StyleDefault.Background(th.SidebarBG).Foreground(th.Subtle)
@@ -731,10 +781,23 @@ func (a *App) drawGitPanel() {
 	listBG := tcell.StyleDefault.Background(th.SidebarBG)
 	diffBG := tcell.StyleDefault.Background(th.BG)
 
+	// The two resize handles idle in Subtle and brighten to Accent while
+	// grabbed — the same grab-handle language as the sidebar splitter, so
+	// the header rule (height) and the list/diff divider (width) both read
+	// as "you can drag me" the moment they're seized.
+	ruleSt := headerSt
+	if a.dragMode == "gitpanel" {
+		ruleSt = tcell.StyleDefault.Background(th.SidebarBG).Foreground(th.Accent)
+	}
+	divSt := headerSt
+	if a.dragMode == "gitlistdiv" {
+		divSt = tcell.StyleDefault.Background(th.SidebarBG).Foreground(th.Accent)
+	}
+
 	// Header: a horizontal rule carrying the title, the change count,
 	// and the ✕ — it doubles as the visual border against the editor.
 	for cx := px; cx < px+pw; cx++ {
-		a.screen.SetContent(cx, py, '─', nil, headerSt)
+		a.screen.SetContent(cx, py, '─', nil, ruleSt)
 	}
 	title := " Git changes · " + itoa(len(a.gitPanel.files)) + " "
 	if len(a.gitPanel.files) == 1 {
@@ -754,8 +817,8 @@ func (a *App) drawGitPanel() {
 			a.screen.SetContent(cx, ry, ' ', nil, listBG)
 		}
 		a.drawGitPanelListRow(row, px, ry, listW)
-		// Divider.
-		a.screen.SetContent(px+listW, ry, '│', nil, headerSt)
+		// Divider — the width resize handle, brightened while dragged.
+		a.screen.SetContent(px+listW, ry, '│', nil, divSt)
 		// Diff cell fill, then diff text.
 		for cx := px + listW + 1; cx < px+pw; cx++ {
 			a.screen.SetContent(cx, ry, ' ', nil, diffBG)

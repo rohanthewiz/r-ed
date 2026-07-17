@@ -641,6 +641,34 @@ func TestDrawTermPanelSmoke(t *testing.T) {
 	}
 }
 
+// TestDrawTermPanel_HeaderBrightensWhileDragging pins the terminal
+// panel's grab-handle affordance: bottom-docked, its header rule sits in
+// Subtle when idle and lights up in Accent while a height drag
+// ("termpanel") is active — the same grab-handle language as the sidebar
+// splitter and the git panel handles.
+func TestDrawTermPanel_HeaderBrightensWhileDragging(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	openTestTerm(t, a)
+	px, py, pw, _ := a.termPanelRect()
+	ruleX := px + pw - 1 // rightmost header cell: always plain rule, clear of ✕
+
+	ruleFg := func(mode string) tcell.Color {
+		a.dragMode = mode
+		a.draw()
+		a.screen.Show()
+		cells, w, _ := a.screen.(tcell.SimulationScreen).GetContents()
+		fg, _, _ := cells[py*w+ruleX].Style.Decompose()
+		return fg
+	}
+
+	if got := ruleFg(""); got != a.theme.Subtle {
+		t.Fatalf("idle header rule fg = %v, want Subtle %v", got, a.theme.Subtle)
+	}
+	if got := ruleFg("termpanel"); got != a.theme.Accent {
+		t.Fatalf("dragging header rule fg = %v, want Accent %v", got, a.theme.Accent)
+	}
+}
+
 // TestTermRealGrshIntegration swaps the real grsh session back in and
 // runs one harmless command end-to-end: submit → embedded Eval →
 // coalescing writer. This is the only test allowed to execute a real

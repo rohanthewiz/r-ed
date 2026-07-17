@@ -420,7 +420,7 @@ func TestGitPanelDoubleClick_JumpsToEditor(t *testing.T) {
 
 	px, py, pw, _ := a.gitPanelRect()
 	// Diff row index 2 ("+NEW") renders at panel row 3 (header + 2).
-	cx, cy := px+gitPanelListWidth(pw)+3, py+3
+	cx, cy := px+a.gitPanelListW(pw)+3, py+3
 
 	a.gitPanelClick(cx, cy)
 	if a.activeTabPtr() != nil {
@@ -499,6 +499,115 @@ func TestHandleMouse_GitPanelHeaderDrag(t *testing.T) {
 	a.handleMouse(tcell.NewEventMouse(btn.x+1, btn.y, tcell.Button1, 0))
 	if a.gitPanel.open || a.dragMode != "" {
 		t.Fatal("✕ press should collapse, not start a drag")
+	}
+}
+
+// TestGitPanelListWidth_ClampsAndOverridesAuto pins the file-list column
+// rules, the horizontal twin of the height test: a user width beats the
+// auto third and both ends clamp to the legal band.
+func TestGitPanelListWidth_ClampsAndOverridesAuto(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.gitPanel.open = true
+	_, _, pw, _ := a.gitPanelRect()
+
+	auto := a.gitPanelListW(pw) // pw is 90 here → 90/3, within [24,40]
+	if auto != 30 {
+		t.Fatalf("auto list width = %d, want 30 (panel width %d)", auto, pw)
+	}
+
+	a.resizeGitPanelListWidth(36)
+	if got := a.gitPanelListW(pw); got != 36 {
+		t.Fatalf("user list width = %d, want 36", got)
+	}
+
+	a.resizeGitPanelListWidth(100)
+	if got := a.gitPanelListW(pw); got != gitPanelMaxListW {
+		t.Fatalf("over-grow = %d, want clamped to %d", got, gitPanelMaxListW)
+	}
+
+	a.resizeGitPanelListWidth(1)
+	if got := a.gitPanelListW(pw); got != gitPanelMinListW {
+		t.Fatalf("over-shrink = %d, want %d", got, gitPanelMinListW)
+	}
+}
+
+// TestHandleMouse_GitListDividerDrag verifies the list/diff divider is a
+// real mouse resize handle: a body-row press on the divider column arms a
+// "gitlistdiv" drag, moving with the button held reshapes the columns
+// live, and release disarms — while a press on the divider column of the
+// header row still starts a height drag, not a width one.
+func TestHandleMouse_GitListDividerDrag(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.gitPanel.open = true
+	px, py, pw, _ := a.gitPanelRect()
+	divX := a.gitPanelDividerX()
+	if divX != px+a.gitPanelListW(pw) {
+		t.Fatalf("dividerX = %d, want %d", divX, px+a.gitPanelListW(pw))
+	}
+
+	// Press on the divider, one body row down, arms the width drag.
+	a.handleMouse(tcell.NewEventMouse(divX, py+2, tcell.Button1, 0))
+	if a.dragMode != "gitlistdiv" {
+		t.Fatalf("dragMode = %q, want gitlistdiv", a.dragMode)
+	}
+	// Drag right: the list column should follow the mouse x.
+	a.handleMouse(tcell.NewEventMouse(px+36, py+2, tcell.Button1, 0))
+	if got := a.gitPanelListW(pw); got != 36 {
+		t.Fatalf("dragged list width = %d, want 36", got)
+	}
+	a.handleMouse(tcell.NewEventMouse(px+36, py+2, tcell.ButtonNone, 0))
+	if a.dragMode != "" {
+		t.Fatalf("dragMode after release = %q, want cleared", a.dragMode)
+	}
+
+	// Same column on the header row is the HEIGHT handle, not the width
+	// one — the divider only exists on body rows.
+	if got := a.gitPanelPress(divX, py); got != "gitpanel" {
+		t.Fatalf("header-row press on divider col = %q, want gitpanel", got)
+	}
+}
+
+// TestDrawGitPanel_HandlesBrightenWhileDragging pins the grab-handle
+// affordance: the header rule and the list/diff divider each sit in
+// Subtle when idle and light up in Accent only while their own drag is
+// active — so a grabbed handle is unmistakable and the other stays quiet.
+func TestDrawGitPanel_HandlesBrightenWhileDragging(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.gitPanel.open = true
+	a.gitPanel.files = []gitPanelFile{{Path: "/p/main.go", Rel: "main.go", Code: " M"}}
+	px, py, pw, _ := a.gitPanelRect()
+	divX := a.gitPanelDividerX()
+	ruleX := px + pw - 8 // plain header rule, clear of the title and ✕
+
+	handleFgs := func(mode string) (divFg, ruleFg tcell.Color) {
+		a.dragMode = mode
+		a.draw()
+		a.screen.Show()
+		cells, w, _ := a.screen.(tcell.SimulationScreen).GetContents()
+		divFg, _, _ = cells[(py+2)*w+divX].Style.Decompose()
+		ruleFg, _, _ = cells[py*w+ruleX].Style.Decompose()
+		return
+	}
+
+	div, rule := handleFgs("")
+	if div != a.theme.Subtle || rule != a.theme.Subtle {
+		t.Fatalf("idle: divider=%v rule=%v, both want Subtle %v", div, rule, a.theme.Subtle)
+	}
+
+	div, rule = handleFgs("gitlistdiv")
+	if div != a.theme.Accent {
+		t.Fatalf("dragging divider: divider fg=%v, want Accent %v", div, a.theme.Accent)
+	}
+	if rule != a.theme.Subtle {
+		t.Fatalf("dragging divider: header rule fg=%v, want it to stay Subtle", rule)
+	}
+
+	div, rule = handleFgs("gitpanel")
+	if rule != a.theme.Accent {
+		t.Fatalf("dragging header: rule fg=%v, want Accent %v", rule, a.theme.Accent)
+	}
+	if div != a.theme.Subtle {
+		t.Fatalf("dragging header: divider fg=%v, want it to stay Subtle", div)
 	}
 }
 

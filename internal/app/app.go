@@ -1533,6 +1533,13 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		return
 	}
 
+	// Git panel list/diff divider drag: the internal seam follows the
+	// mouse x, reshaping the file-list column against the diff pane.
+	if leftDown && a.dragMode == "gitlistdiv" {
+		a.dragGitListDivTo(x)
+		return
+	}
+
 	// Terminal panel resize drag — same gesture, other bottom panel.
 	if leftDown && a.dragMode == "termpanel" {
 		a.dragTermPanelTo(y)
@@ -1564,12 +1571,11 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 		case y == 0:
 			a.tabBarClick(x, y)
 		// The git panel sits inside the editor's former y-range, so its
-		// hit-test must run before the catch-all editor case. A press
-		// on the header rule starts a resize drag instead of a click.
+		// hit-test must run before the catch-all editor case. A press on
+		// the header rule or the list/diff divider starts a resize drag
+		// instead of a click (gitPanelPress names which mode).
 		case a.gitPanel.open && a.gitPanelContains(x, y):
-			if a.gitPanelPress(x, y) {
-				a.dragMode = "gitpanel"
-			}
+			a.dragMode = a.gitPanelPress(x, y)
 		case y > 0 && y < a.height-1:
 			a.editorPress(x, y)
 			a.dragMode = "editor"

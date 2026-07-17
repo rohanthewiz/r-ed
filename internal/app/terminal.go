@@ -981,9 +981,16 @@ func (a *App) drawTermPanel() {
 	bodyBG := tcell.StyleDefault.Background(th.BG)
 
 	// Header rule: title + cwd on the left, ⏹ (while running) and ✕ on
-	// the right. The rule doubles as the resize grab handle.
+	// the right. Bottom-docked, the rule doubles as the resize grab
+	// handle and brightens to Accent while dragged — the same grab-handle
+	// language as the sidebar splitter. (Left-docked, the vertical
+	// splitter is the handle and this rule stays idle.)
+	ruleSt := headerSt
+	if a.dragMode == "termpanel" {
+		ruleSt = tcell.StyleDefault.Background(th.SidebarBG).Foreground(th.Accent)
+	}
 	for cx := px; cx < px+pw; cx++ {
-		a.screen.SetContent(cx, py, '─', nil, headerSt)
+		a.screen.SetContent(cx, py, '─', nil, ruleSt)
 	}
 	title := " Terminal "
 	drawAt(a.screen, px+1, py, title, titleSt)
