@@ -1009,26 +1009,19 @@ func TestMenuClose_NoTab(t *testing.T) {
 }
 
 // TestMenuActivate_RunsHovered runs the action attached to the highlighted
-// row.
+// row, using the sidebar-toggle row (always enabled, dynamic label) as the
+// observable: activating it must flip sidebarShown. The View section is
+// expanded first so the toggle row is present in the layout.
 func TestMenuActivate_RunsHovered(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.openMenu()
-	// Force highlight onto the sidebar-toggle row (always enabled, label
-	// supplied dynamically via labelFor), then activate.
-	items, _, _ := a.menuLayout()
-	for i, item := range items {
-		if item.labelFor != nil && item.label == "" && item.action != nil {
-			// labelFor + empty static label is the marker for the toggle
-			// row. The newFile row also uses labelFor, so disambiguate by
-			// flipping the sidebar and checking afterward.
-			a.hoveredMenuRow = i
-			a.menuActivate()
-			a.openMenu()
-		}
-	}
-	// Re-find and run the toggle row via its dynamic label.
+	a.setAllMenuSections(false) // ensure every section's rows are laid out
+
+	// Target the sidebar toggle by its dynamic label — it shares the
+	// "labelFor + empty static label" shape with several other toggle rows,
+	// so the label is the only reliable discriminator.
 	a.hoveredMenuRow = -1
-	items, _, _ = a.menuLayout()
+	items, _, _ := a.menuLayout()
 	for i, item := range items {
 		if item.labelFor != nil && (item.labelFor(a) == "Show file explorer" || item.labelFor(a) == "Hide file explorer") {
 			a.hoveredMenuRow = i
@@ -1795,25 +1788,27 @@ func TestDrawStatusBar_OmitsBranchWhenEmpty(t *testing.T) {
 }
 
 // TestMenuLayout_NoCustomActions pins down the baseline geometry with
-// every section expanded: nine collapsible groups each contribute a
-// header row (9) plus their 47 action rows (= 56 total), Quit renders
-// headerless behind a divider, and the height matches the layout total.
-// Catches accidental off-by-one regressions when someone tweaks the
-// layout helper.
+// every section expanded: the pinned top zone contributes two rows (the
+// command palette + the expand/collapse-all toggle), nine collapsible
+// groups each contribute a header row (9) plus their 46 action rows, and
+// Quit renders headerless behind a divider (its 1 row) — 57 total. The
+// height matches the layout total. Catches accidental off-by-one
+// regressions when someone tweaks the layout helper.
 func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 61 {
-		t.Errorf("modalHeight = %d, want 61", h)
+	if h != 63 {
+		t.Errorf("modalHeight = %d, want 63", h)
 	}
-	if got := len(items); got != 56 {
-		t.Errorf("row count = %d, want 56 (47 actions + 9 headers)", got)
+	if got := len(items); got != 57 {
+		t.Errorf("row count = %d, want 57 (2 top-zone + 46 group actions + 9 headers)", got)
 	}
-	// Only the pinned title divider and the one setting off the
-	// headerless Quit group remain — headers separate the rest.
-	wantDiv := []int{2, 58}
+	// The pinned title divider (2), the one under the top zone (5), and the
+	// one setting off the headerless Quit group (60) — headers separate the
+	// rest.
+	wantDiv := []int{2, 5, 60}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1914,6 +1909,91 @@ func TestMenuHeaderClickToggles(t *testing.T) {
 	clickGitHeader()
 	if a.sectionCollapsed("Git") {
 		t.Fatal("second click should expand Git")
+	}
+}
+
+// TestSeedMenuFoldDefault_ContractsEverything pins the startup default:
+// seeding on a fresh app folds every collapsible section, so the menu
+// opens as a compact index of headers rather than a long scroll.
+func TestSeedMenuFoldDefault_ContractsEverything(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	// Fresh app: no fold state yet, so everything is expanded by default.
+	if !a.anyMenuSectionExpanded() {
+		t.Fatal("precondition: a fresh app should start fully expanded")
+	}
+	a.seedMenuFoldDefault()
+	for _, title := range a.menuSectionTitles() {
+		if !a.sectionCollapsed(title) {
+			t.Errorf("section %q should be collapsed after seeding the default", title)
+		}
+	}
+}
+
+// TestSeedMenuFoldDefault_RespectsExistingState pins the "unless a menu
+// expand state already exists" clause: once the user has touched a fold,
+// seeding must not clobber their choices.
+func TestSeedMenuFoldDefault_RespectsExistingState(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	// Simulate a prior user choice: expand nothing but explicitly mark the
+	// map as touched, with Git left OPEN on purpose.
+	a.toggleMenuSection("Tab") // collapses Tab, initializes the map
+	a.seedMenuFoldDefault()
+	if a.sectionCollapsed("Git") {
+		t.Fatal("seeding must not fold sections once the user has a fold state")
+	}
+	if !a.sectionCollapsed("Tab") {
+		t.Fatal("the user's own fold should survive seeding")
+	}
+}
+
+// TestMenuToggleAllSections walks the expand/collapse-all button: from a
+// fully-folded default one press expands everything; a second press folds
+// it all back. The label tracks what the next press will do.
+func TestMenuToggleAllSections(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.seedMenuFoldDefault() // start from the collapsed default
+
+	if got := a.expandAllToggleLabel(); got != "Expand all sections" {
+		t.Fatalf("collapsed label = %q, want %q", got, "Expand all sections")
+	}
+	a.menuToggleAllSections()
+	if a.anyMenuSectionExpanded() != true {
+		t.Fatal("first press should expand every section")
+	}
+	for _, title := range a.menuSectionTitles() {
+		if a.sectionCollapsed(title) {
+			t.Errorf("section %q still folded after Expand all", title)
+		}
+	}
+	if got := a.expandAllToggleLabel(); got != "Collapse all sections" {
+		t.Fatalf("expanded label = %q, want %q", got, "Collapse all sections")
+	}
+	a.menuToggleAllSections()
+	if a.anyMenuSectionExpanded() {
+		t.Fatal("second press should fold every section")
+	}
+}
+
+// TestMenuLayout_PaletteIsFirstRow pins task 1: the command palette is the
+// menu's first row and lives outside every collapsible group, so a
+// collapse-all default can never hide it. The expand/collapse-all toggle
+// follows it in the pinned top zone.
+func TestMenuLayout_PaletteIsFirstRow(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.seedMenuFoldDefault() // even fully folded, the palette must survive
+	items, _, _ := a.menuLayout()
+	if len(items) == 0 {
+		t.Fatal("empty menu layout")
+	}
+	if items[0].header {
+		t.Fatalf("first row is a section header %q, want the command palette", items[0].label)
+	}
+	if items[0].label != paletteMenuLabel {
+		t.Fatalf("first row = %q, want %q", items[0].label, paletteMenuLabel)
+	}
+	// The second row is the expand/collapse-all toggle (dynamic label).
+	if items[1].labelFor == nil || (items[1].labelFor(a) != "Expand all sections" && items[1].labelFor(a) != "Collapse all sections") {
+		t.Fatalf("second row = %q, want the expand/collapse-all toggle", items[1].label)
 	}
 }
 
@@ -2053,8 +2133,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 64 { // 61 + custom header + 2 items
-		t.Errorf("modalHeight = %d, want 64", h)
+	if h != 66 { // 63 baseline + custom header + 2 items
+		t.Errorf("modalHeight = %d, want 66", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.

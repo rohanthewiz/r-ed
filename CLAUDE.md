@@ -321,8 +321,24 @@ close/reopen — not persisted to config). Quit is the one
 non-collapsible group: it renders headerless behind a divider, because
 a one-row section you could fold the exit away into reads as a bug.
 Folding re-centers the (now shorter) modal — expected, same as any
-resize. Since headers are rows too, the geometry pins count them:
-`TestMenuLayout_NoCustomActions` expects 47 actions + 9 headers.
+resize.
+
+**Pinned top zone + collapse-by-default.** `menuLayout` prepends two
+rows OUTSIDE every group, above the first section: the **command
+palette** (the menu's headline — the fuzzy gateway to every action, so
+it must never hide behind a fold) and the **expand/collapse-all toggle**
+(`menuToggleAllSections` / `expandAllToggleLabel`, which leaves the menu
+open like a header does). A divider sets this zone off from the section
+list. On first run `New` calls `seedMenuFoldDefault`, which contracts
+every section (via `setAllMenuSections`) UNLESS `menuCollapsed` is
+already populated — so the menu opens as a compact index of headers, not
+a long scroll, and the palette/expand-all zone keeps everything one click
+away. Tests build the App struct directly (not through `New`), so they
+still start expanded; opt into the collapsed default with
+`seedMenuFoldDefault`. Since headers and the top-zone rows are all rows,
+the geometry pins count them: `TestMenuLayout_NoCustomActions` expects
+2 top-zone rows + 46 group actions + 9 headers (57), height 63, dividers
+`[2, 5, 60]`.
 
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.

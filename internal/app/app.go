@@ -219,8 +219,10 @@ func builtinMenuGroups() []menuGroup {
 			{label: "Redo", shortcut: "esc r", action: (*App).menuRedo, enabled: (*App).hasRedo},
 			{label: "Revert file", action: (*App).menuRevert, enabled: (*App).hasRevert},
 		}},
+		// Command palette lives OUTSIDE this group — it's promoted to the
+		// pinned top zone in menuLayout so it stays the menu's headline
+		// entry even when every section is folded (the startup default).
 		{title: "Search", collapsible: true, items: []menuItemDef{
-			{label: paletteMenuLabel, shortcut: "esc a", action: (*App).menuCommandPalette, enabled: alwaysTrue},
 			{label: "Find in file", shortcut: "esc f", action: (*App).menuFind, enabled: (*App).hasFindable},
 			{label: "Find file in project", shortcut: "esc p", action: (*App).menuFindFile, enabled: (*App).hasFinder},
 		}},
@@ -326,6 +328,30 @@ func (a *App) menuLayout() (items []menuItemDef, dividers []int, modalHeight int
 	// Title at relY 1, divider under it at relY 2, first row at relY 3.
 	dividers = []int{2}
 	y := 3
+
+	// Pinned top zone: the command palette (the menu's headline — a fuzzy
+	// gateway to every action) followed by the expand/collapse-all toggle.
+	// Both sit OUTSIDE the collapsible groups so they stay reachable even
+	// when every section is folded, which is the startup default. A divider
+	// sets the zone off from the (usually folded) section list below it.
+	items = append(items, menuItemDef{
+		label:    paletteMenuLabel,
+		shortcut: "esc a",
+		relY:     y,
+		action:   (*App).menuCommandPalette,
+		enabled:  alwaysTrue,
+	})
+	y++
+	items = append(items, menuItemDef{
+		relY:     y,
+		action:   (*App).menuToggleAllSections,
+		enabled:  alwaysTrue,
+		labelFor: (*App).expandAllToggleLabel,
+	})
+	y++
+	dividers = append(dividers, y)
+	y++
+
 	for _, g := range a.visibleMenuGroups() {
 		if g.collapsible {
 			title := g.title // capture for the toggle closure
@@ -372,6 +398,80 @@ func (a *App) toggleMenuSection(title string) {
 		a.menuCollapsed = map[string]bool{}
 	}
 	a.menuCollapsed[title] = !a.menuCollapsed[title]
+}
+
+// menuSectionTitles returns the titles of every collapsible menu section
+// in display order — the set the collapse-all startup default and the
+// expand/collapse-all toggle operate over. The non-collapsible Quit group
+// is excluded (it has no fold state); the synthetic Custom group is
+// included when present so "Collapse all" folds it too.
+func (a *App) menuSectionTitles() []string {
+	var titles []string
+	for _, g := range a.visibleMenuGroups() {
+		if g.collapsible {
+			titles = append(titles, g.title)
+		}
+	}
+	return titles
+}
+
+// anyMenuSectionExpanded reports whether at least one collapsible section
+// is currently unfolded. It drives the expand/collapse-all toggle: if
+// anything is open the button collapses everything, otherwise it expands
+// everything.
+func (a *App) anyMenuSectionExpanded() bool {
+	for _, title := range a.menuSectionTitles() {
+		if !a.sectionCollapsed(title) {
+			return true
+		}
+	}
+	return false
+}
+
+// setAllMenuSections folds (collapsed=true) or unfolds every collapsible
+// section at once. It is the shared mechanism behind both the collapse-all
+// startup default and the expand/collapse-all menu toggle, so the two can
+// never drift on which sections count as foldable.
+func (a *App) setAllMenuSections(collapsed bool) {
+	if a.menuCollapsed == nil {
+		a.menuCollapsed = map[string]bool{}
+	}
+	for _, title := range a.menuSectionTitles() {
+		a.menuCollapsed[title] = collapsed
+	}
+}
+
+// menuToggleAllSections is the "Expand all / Collapse all" button. Like a
+// section header it deliberately leaves the menu open so the reflow is
+// visible in place. If anything is expanded it collapses everything;
+// only when every section is already folded does it expand them all — so
+// after the collapse-all default the button's first press opens the menu
+// up in one click.
+func (a *App) menuToggleAllSections() {
+	a.setAllMenuSections(a.anyMenuSectionExpanded())
+}
+
+// expandAllToggleLabel returns the dynamic label for the expand/collapse-
+// all row, mirroring what the button will do on the next press.
+func (a *App) expandAllToggleLabel() string {
+	if a.anyMenuSectionExpanded() {
+		return "Collapse all sections"
+	}
+	return "Expand all sections"
+}
+
+// seedMenuFoldDefault contracts every menu section on first run so the
+// action menu opens as a compact index of section headers rather than a
+// long scroll of rows: the command palette (pinned at the top) is the
+// primary entry point, and the folded headers are a quick map into the
+// rest. Skipped when fold state already exists so it never overrides a
+// choice the user has made — honoring "start collapsed UNLESS a menu
+// expand state already exists".
+func (a *App) seedMenuFoldDefault() {
+	if a.menuCollapsed != nil {
+		return
+	}
+	a.setAllMenuSections(true)
 }
 
 // App is the editor's top-level state holder and event-loop owner.
@@ -615,6 +715,11 @@ func New(rootDir string) (*App, error) {
 	a.loadUserConfig()
 	a.refreshGitStatus()
 	a.loadCustomActions()
+	// Seed the fold default AFTER custom actions load so the synthetic
+	// "Custom" section is folded too. Every section starts contracted; the
+	// pinned command palette and the expand-all button keep everything one
+	// click away.
+	a.seedMenuFoldDefault()
 	a.flash("Welcome — click a file to open · click  ≡  for the menu")
 	a.startTreeRefresh()
 	// Kick off the project file index in the background so that by
