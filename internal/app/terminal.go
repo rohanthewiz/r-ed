@@ -462,6 +462,16 @@ func (a *App) termAppendOutput(chunk string) {
 		case '\n':
 			a.term.lines = append(a.term.lines, termLine{text: a.term.partial, kind: termOut})
 			a.term.partial = ""
+		case '\f':
+			// Screen clear: `clear` / `tput clear` / `reset` emit ED or
+			// RIS escapes that stripTermANSI normalizes to a form feed
+			// (also a literal Ctrl-L in output). Wipe the scrollback and
+			// the partial tail — the panel isn't a PTY, so honoring the
+			// clear ourselves is the only thing that makes it visible.
+			a.term.lines = nil
+			a.term.partial = ""
+			a.term.scroll = 0
+			atBottom = true
 		case '\r':
 			a.term.partial = ""
 		case '\t':
@@ -557,7 +567,10 @@ func (a *App) termPanelScroll(delta int) {
 // (ESC [ … final byte in @–~), OSC (ESC ] … BEL or ESC \), and two-byte
 // ESC+char forms. The panel renders through the editor theme, so child
 // styling is noise — and unstripped CSI bytes would render as garbage
-// cells.
+// cells. The one exception: a whole-screen erase (ED "2J"/"3J") or a
+// full reset (RIS, ESC c) is NORMALIZED to a form feed (\f) rather than
+// dropped, so termAppendOutput can honor `clear` / `reset` — a
+// stripped-to-nothing clear is exactly why they looked like no-ops.
 func stripTermANSI(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -576,6 +589,15 @@ func stripTermANSI(s string) string {
 			for j < len(s) && (s[j] < '@' || s[j] > '~') {
 				j++
 			}
+			// Erase-in-Display for the whole screen (2) or scrollback (3)
+			// means "clear" — emit \f so the panel wipes instead of
+			// swallowing the escape.
+			if j < len(s) && s[j] == 'J' {
+				switch s[i+2 : j] {
+				case "2", "3":
+					b.WriteByte('\f')
+				}
+			}
 			i = j // loop's i++ steps past the final byte
 		case ']': // OSC: runs to BEL or ESC \
 			j := i + 2
@@ -586,7 +608,10 @@ func stripTermANSI(s string) string {
 				j++
 			}
 			i = j
-		default: // two-byte escape (ESC c, ESC =, …)
+		default: // two-byte escape (ESC c resets/clears, ESC =, …)
+			if s[i+1] == 'c' { // RIS full reset — treat as clear
+				b.WriteByte('\f')
+			}
 			i++
 		}
 	}

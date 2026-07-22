@@ -304,7 +304,8 @@ func TestTermPartialLine(t *testing.T) {
 }
 
 // TestStripTermANSI covers the three escape families child output uses:
-// SGR color (CSI), window-title OSC, and two-byte escapes.
+// SGR color (CSI), window-title OSC, and two-byte escapes — plus the
+// clear-normalization exception (ED 2J/3J and RIS become \f).
 func TestStripTermANSI(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"plain", "plain"},
@@ -312,13 +313,45 @@ func TestStripTermANSI(t *testing.T) {
 		{"\x1b[1;38;5;196mbold\x1b[m!", "bold!"},
 		{"\x1b]0;title\x07after", "after"},
 		{"\x1b]8;;http://x\x1b\\link", "link"},
-		{"a\x1bcb", "ab"},
-		{"cut\x1b", "cut"},
+		{"a\x1bcb", "a\fb"},              // RIS reset → clear
+		{"cut\x1b", "cut"},               //
+		{"\x1b[2J", "\f"},                // erase whole screen → clear
+		{"\x1b[3J", "\f"},                // erase scrollback → clear
+		{"\x1b[3J\x1b[H\x1b[2J", "\f\f"}, // what `clear` emits
+		{"\x1b[0Jkeep", "keep"},          // erase-to-end is not a full clear
+		{"\x1b[Kkeep", "keep"},           // erase-in-line is untouched
 	}
 	for _, c := range cases {
 		if got := stripTermANSI(c.in); got != c.want {
 			t.Errorf("stripTermANSI(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestTermClearWipesScrollback pins the user-visible fix: `clear` (and
+// friends) emit erase-screen escapes that must actually empty the panel
+// rather than being stripped to a no-op.
+func TestTermClearWipesScrollback(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	openTestTerm(t, a)
+
+	a.termAppendOutput("one\ntwo\nthree\n")
+	a.termAppendOutput("stale tail") // held in partial
+	if len(a.term.lines) != 3 || a.term.partial == "" {
+		t.Fatalf("setup: lines=%d partial=%q", len(a.term.lines), a.term.partial)
+	}
+
+	// The exact byte stream /usr/bin/clear writes.
+	a.termAppendOutput("\x1b[3J\x1b[H\x1b[2J")
+	if len(a.term.lines) != 0 || a.term.partial != "" || a.term.scroll != 0 {
+		t.Fatalf("after clear: lines=%d partial=%q scroll=%d, want empty",
+			len(a.term.lines), a.term.partial, a.term.scroll)
+	}
+
+	// Output after the clear starts a fresh screen.
+	a.termAppendOutput("fresh\n")
+	if len(a.term.lines) != 1 || a.term.lines[0].text != "fresh" {
+		t.Fatalf("post-clear output = %+v, want single fresh line", a.term.lines)
 	}
 }
 
