@@ -191,10 +191,10 @@ func TestMenuButtonRect(t *testing.T) {
 // to (0,0) when the window is too small to fit it.
 func TestMenuModalRect_Centered(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
-	// The menu (52 rows) outgrew the 40-row default sim screen; give it
-	// vertical room so "centered" is well-defined — the too-small case
-	// is pinned separately by TestMenuModalRect_ClampsTinyWindow.
-	a.height = 60
+	// The menu (61 rows fully expanded) outgrew the 40-row default sim
+	// screen; give it vertical room so "centered" is well-defined — the
+	// too-small case is pinned separately by TestMenuModalRect_ClampsTinyWindow.
+	a.height = 64
 	x, y, w, h := a.menuModalRect()
 	_, _, expectedH := a.menuLayout()
 	if w != modalWidth || h != expectedH {
@@ -1794,22 +1794,26 @@ func TestDrawStatusBar_OmitsBranchWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestMenuLayout_NoCustomActions pins down the baseline geometry: with
-// zero custom actions the modal still has ten built-in groups and the
-// height matches the expected layout total. Catches accidental
-// off-by-one regressions when someone tweaks the layout helper.
+// TestMenuLayout_NoCustomActions pins down the baseline geometry with
+// every section expanded: nine collapsible groups each contribute a
+// header row (9) plus their 47 action rows (= 56 total), Quit renders
+// headerless behind a divider, and the height matches the layout total.
+// Catches accidental off-by-one regressions when someone tweaks the
+// layout helper.
 func TestMenuLayout_NoCustomActions(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.customActions = nil
 	items, dividers, h := a.menuLayout()
 
-	if h != 60 {
-		t.Errorf("modalHeight = %d, want 60", h)
+	if h != 61 {
+		t.Errorf("modalHeight = %d, want 61", h)
 	}
-	if got := len(items); got != 47 {
-		t.Errorf("item count = %d, want 47 built-ins", got)
+	if got := len(items); got != 56 {
+		t.Errorf("row count = %d, want 56 (47 actions + 9 headers)", got)
 	}
-	wantDiv := []int{2, 7, 12, 16, 20, 23, 33, 36, 49, 57}
+	// Only the pinned title divider and the one setting off the
+	// headerless Quit group remain — headers separate the rest.
+	wantDiv := []int{2, 58}
 	if len(dividers) != len(wantDiv) {
 		t.Fatalf("dividers = %v, want %v", dividers, wantDiv)
 	}
@@ -1817,6 +1821,162 @@ func TestMenuLayout_NoCustomActions(t *testing.T) {
 		if dividers[i] != d {
 			t.Errorf("dividers[%d] = %d, want %d", i, dividers[i], d)
 		}
+	}
+}
+
+// TestMenuLayout_CollapseHidesSectionRows pins the fold behavior: after
+// toggling a section its item rows leave the layout (header stays), the
+// modal shrinks by exactly that item count, and toggling again restores
+// them. This is the whole point of the feature.
+func TestMenuLayout_CollapseHidesSectionRows(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.customActions = nil
+	before, _, hBefore := a.menuLayout()
+
+	// Git is the largest section (9 rows) — a clear signal.
+	a.toggleMenuSection("Git")
+	if !a.sectionCollapsed("Git") {
+		t.Fatal("toggle should collapse Git")
+	}
+	after, _, hAfter := a.menuLayout()
+	if got := len(before) - len(after); got != 9 {
+		t.Errorf("collapsing Git hid %d rows, want 9", got)
+	}
+	if got := hBefore - hAfter; got != 9 {
+		t.Errorf("height shrank by %d, want 9", got)
+	}
+	// The Git header itself must survive so the user can unfold.
+	if menuHeaderIndex(after, "Git") < 0 {
+		t.Error("Git header disappeared when the section folded")
+	}
+	// No Git action row should remain.
+	if menuRowIndex(after, "Stage file") >= 0 {
+		t.Error("a Git item is still present after folding")
+	}
+
+	a.toggleMenuSection("Git")
+	restored, _, hRestored := a.menuLayout()
+	if len(restored) != len(before) || hRestored != hBefore {
+		t.Errorf("unfold didn't restore layout: rows %d/%d height %d/%d",
+			len(restored), len(before), hRestored, hBefore)
+	}
+}
+
+// menuHeaderIndex returns the index of the section header titled title,
+// or -1. menuRowIndex is its non-header twin for action labels.
+func menuHeaderIndex(items []menuItemDef, title string) int {
+	for i, it := range items {
+		if it.header && it.label == title {
+			return i
+		}
+	}
+	return -1
+}
+
+func menuRowIndex(items []menuItemDef, label string) int {
+	for i, it := range items {
+		if !it.header && it.label == label {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestMenuHeaderClickToggles drives the fold through the real mouse
+// dispatch: clicking a section header collapses it and leaves the menu
+// open (unlike an action row, which closes it), and a second click
+// expands it again.
+func TestMenuHeaderClickToggles(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.height = 64 // whole menu fits, scroll 0
+	a.openMenu()
+
+	// clickGitHeader hits the current on-screen position of the Git
+	// header — recomputed each time because folding shrinks the modal
+	// and it re-centers, shifting every row's screen row.
+	clickGitHeader := func() {
+		items, _, _ := a.menuLayout()
+		hi := menuHeaderIndex(items, "Git")
+		if hi < 0 {
+			t.Fatal("Git header missing from layout")
+		}
+		mx, my, _, _ := a.menuModalRect()
+		a.handleMenuMouse(mx+2, my+items[hi].relY-a.menuScrollOffset(), tcell.Button1)
+	}
+
+	clickGitHeader()
+	if !a.sectionCollapsed("Git") {
+		t.Fatal("clicking the Git header should collapse it")
+	}
+	if !a.menuOpen {
+		t.Fatal("folding a section must not close the menu")
+	}
+	clickGitHeader()
+	if a.sectionCollapsed("Git") {
+		t.Fatal("second click should expand Git")
+	}
+}
+
+// TestMenuFoldSurvivesReopen pins that a fold is session-sticky: closing
+// and reopening the menu keeps a collapsed section collapsed (the state
+// lives on App, not in per-open scratch).
+func TestMenuFoldSurvivesReopen(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.toggleMenuSection("File")
+	a.openMenu()
+	a.closeMenu()
+	a.openMenu()
+	if !a.sectionCollapsed("File") {
+		t.Fatal("fold state should survive a menu close/reopen")
+	}
+}
+
+// TestOpenMenuSkipsHeaderSelection pins that the initial keyboard
+// highlight is a real action, never a section header — a reflex Enter
+// should run something, not fold the first section.
+func TestOpenMenuSkipsHeaderSelection(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.openMenu()
+	if a.hoveredMenuRow < 0 {
+		t.Fatal("openMenu should preselect a row")
+	}
+	items, _, _ := a.menuLayout()
+	if items[a.hoveredMenuRow].header {
+		t.Fatalf("initial selection landed on header %q", items[a.hoveredMenuRow].label)
+	}
+}
+
+// TestDrawMenu_HeaderChevronReflectsFold pins the visible affordance:
+// an expanded section header draws ▾ in its gutter, a collapsed one ▸.
+func TestDrawMenu_HeaderChevronReflectsFold(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.openMenu()
+
+	headerCell := func() rune {
+		items, _, _ := a.menuLayout()
+		hi := menuHeaderIndex(items, "Tab")
+		if hi < 0 {
+			t.Fatal("Tab header missing")
+		}
+		mx, my, _, _ := a.menuModalRect()
+		cy := my + items[hi].relY - a.menuScrollOffset()
+		a.draw()
+		scr := a.screen.(tcell.SimulationScreen)
+		scr.Show()
+		cells, w, _ := scr.GetContents()
+		c := cells[cy*w+mx+2]
+		if len(c.Runes) == 0 {
+			return ' '
+		}
+		return c.Runes[0]
+	}
+
+	if got := headerCell(); got != '▾' {
+		t.Fatalf("expanded Tab header gutter = %q, want ▾", got)
+	}
+	a.toggleMenuSection("Tab")
+	if got := headerCell(); got != '▸' {
+		t.Fatalf("collapsed Tab header gutter = %q, want ▸", got)
 	}
 }
 
@@ -1893,8 +2053,8 @@ func TestMenuLayout_WithCustomActions(t *testing.T) {
 	}
 	items, _, h := a.menuLayout()
 
-	if h != 63 { // 60 + 2 items + 1 divider
-		t.Errorf("modalHeight = %d, want 63", h)
+	if h != 64 { // 61 + custom header + 2 items
+		t.Errorf("modalHeight = %d, want 64", h)
 	}
 	// Custom actions should be the second-to-last and third-to-last
 	// rows, with Quit as the final row.
@@ -2348,7 +2508,7 @@ func TestMenuModalRect_ClampsToWindowHeight(t *testing.T) {
 	}
 
 	// A tall window fits everything — no scroll range at all.
-	a.height = 60
+	a.height = 64
 	if got := a.menuMaxScroll(); got != 0 {
 		t.Fatalf("tall-window menuMaxScroll = %d, want 0", got)
 	}
@@ -2418,7 +2578,8 @@ func TestHandleMenuMouse_ClickAfterScroll(t *testing.T) {
 func TestMenuMoveSelection_ScrollsIntoView(t *testing.T) {
 	a := newTestApp(t, t.TempDir())
 	a.height = 30
-	a.openMenu() // selects the first enabled row, scroll 0
+	a.openMenu()         // scroll 0
+	a.hoveredMenuRow = 0 // first selectable row (the Tab section header)
 
 	a.menuMoveSelection(-1) // wrap up to the last enabled row: Quit
 	items, _, _ := a.menuLayout()

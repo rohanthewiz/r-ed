@@ -308,6 +308,22 @@ clipped content. All scrolled geometry flows through
 `menuItemIndexAt` / `menuScrollOffset` — don't hand-compute row
 positions anywhere else.
 
+**Collapsible sections.** `builtinMenuGroups` returns `[]menuGroup`
+(title + `collapsible` + items), and `menuLayout` stamps a fold-header
+row (`menuItemDef.header`) above every collapsible group whose action
+toggles `App.menuCollapsed[title]`; a collapsed section keeps its header
+but drops its item rows from the layout entirely (so they're neither
+drawn, hit-tested, nor keyboard-reachable). Headers ARE selectable
+(fold via keyboard), but `openMenu` deliberately skips them for the
+initial highlight so a reflex Enter runs an action, not a fold. Fold
+state is session-only (map on `App`, nil = all expanded, survives
+close/reopen — not persisted to config). Quit is the one
+non-collapsible group: it renders headerless behind a divider, because
+a one-row section you could fold the exit away into reads as a bug.
+Folding re-centers the (now shorter) modal — expected, same as any
+resize. Since headers are rows too, the geometry pins count them:
+`TestMenuLayout_NoCustomActions` expects 47 actions + 9 headers.
+
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.
 Min widths: `minSidebarWidth = 18`, `minEditorAfterDrag = 40`. Don't

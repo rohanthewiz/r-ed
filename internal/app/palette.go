@@ -80,28 +80,32 @@ func paletteSources() []paletteSource {
 	return []paletteSource{paletteActionItems, paletteFileItems}
 }
 
-// paletteActionItems adapts the action-menu inventory (menuLayout:
-// built-in groups + custom actions) into palette items. Only actions
-// whose enabled predicate passes right now are listed — a palette
-// that offers "Undo" with nothing to undo just teaches the user that
-// Enter sometimes does nothing. Dynamic labels (labelFor) are
+// paletteActionItems adapts the action-menu inventory (built-in groups
+// + custom actions) into palette items. It flattens visibleMenuGroups
+// rather than menuLayout on purpose: the palette must list every enabled
+// action regardless of which ≡-menu sections are folded, and must never
+// surface the synthetic section-header rows menuLayout stamps in. Only
+// actions whose enabled predicate passes right now are listed — a
+// palette that offers "Undo" with nothing to undo just teaches the user
+// that Enter sometimes does nothing. Dynamic labels (labelFor) are
 // resolved here so toggles read correctly ("Hide file explorer" vs
 // "Show file explorer").
 func paletteActionItems(a *App) []paletteItem {
-	items, _, _ := a.menuLayout()
-	out := make([]paletteItem, 0, len(items))
-	for _, it := range items {
-		if !it.enabled(a) {
-			continue
+	var out []paletteItem
+	for _, g := range a.visibleMenuGroups() {
+		for _, it := range g.items {
+			if !it.enabled(a) {
+				continue
+			}
+			label := it.label
+			if it.labelFor != nil {
+				label = it.labelFor(a)
+			}
+			if label == paletteMenuLabel {
+				continue
+			}
+			out = append(out, paletteItem{label: label, run: it.action})
 		}
-		label := it.label
-		if it.labelFor != nil {
-			label = it.labelFor(a)
-		}
-		if label == paletteMenuLabel {
-			continue
-		}
-		out = append(out, paletteItem{label: label, run: it.action})
 	}
 	return out
 }

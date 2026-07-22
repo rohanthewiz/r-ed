@@ -159,6 +159,11 @@ type clickRecord struct {
 // Purely informational — the actual dispatch lives in the leader table
 // and handleKey; keep the two in sync when rebinding. Empty means the
 // action is menu/mouse-only and the column stays blank.
+//
+// header marks a collapsible section-title row rather than an action:
+// menuLayout stamps one at the top of every collapsible group, its
+// action toggles that section's collapsed state (keyed by label), and
+// drawMenu paints it with a fold chevron instead of a plain row.
 type menuItemDef struct {
 	label    string
 	shortcut string
@@ -166,56 +171,66 @@ type menuItemDef struct {
 	action   func(*App)
 	enabled  func(*App) bool
 	labelFor func(*App) string
+	header   bool
+}
+
+// menuGroup is a titled block of action rows in the ≡ menu. Collapsible
+// groups get a clickable header row (fold chevron + title) and hide
+// their items while collapsed; a non-collapsible group (Quit) renders
+// its items directly, set off by a divider instead of a header.
+type menuGroup struct {
+	title       string
+	items       []menuItemDef
+	collapsible bool
 }
 
 // builtinMenuGroups returns the editor's built-in action groups in
 // display order. Custom actions loaded from
-// ~/.config/r-ed/actions.json get prepended as their own group
-// in menuLayout — they're not included here so toggling them on or
-// off doesn't require touching this table.
+// ~/.config/r-ed/actions.json get spliced in as their own group in
+// menuLayout — they're not included here so toggling them on or off
+// doesn't require touching this table.
 //
-// Each group is rendered as a contiguous block; menuLayout interleaves
-// dividers between groups and recomputes every relY. The relY field is
-// left zero here on purpose — it gets stamped at layout time.
-func builtinMenuGroups() [][]menuItemDef {
-	return [][]menuItemDef{
-		// Tab actions
-		{
+// Each group renders as a titled, collapsible block: menuLayout stamps
+// a fold header above it, hides its rows while the section is collapsed,
+// and recomputes every relY. Quit is intentionally NOT collapsible — a
+// one-row section you could fold away the exit from reads as a bug, so
+// it renders headerless, set off by a divider. The relY field is left
+// zero here on purpose — it gets stamped at layout time.
+func builtinMenuGroups() []menuGroup {
+	return []menuGroup{
+		{title: "Tab", collapsible: true, items: []menuItemDef{
 			{label: "Save", shortcut: "esc s", action: (*App).menuSave, enabled: (*App).hasSavableTab},
 			{label: "Save & close tab", action: (*App).menuSaveAndClose, enabled: (*App).hasSavableTab},
 			{label: "Close tab", shortcut: "esc w", action: (*App).menuClose, enabled: (*App).hasTab},
 			{action: (*App).menuToggleAutoSave, enabled: alwaysTrue, labelFor: (*App).autoSaveToggleLabel},
-		},
+		}},
 		// View toggles. Deliberately the second group: the menu outgrows
 		// short windows and scrolls, so anything living near the bottom
 		// is effectively hidden — and Show terminal is reached for far
 		// too often to bury. Keep these rows above the fold.
-		{
+		{title: "View", collapsible: true, items: []menuItemDef{
 			{shortcut: "esc t", action: (*App).menuToggleSidebar, enabled: alwaysTrue, labelFor: (*App).sidebarToggleLabel},
 			{action: (*App).menuToggleExecMarks, enabled: alwaysTrue, labelFor: (*App).execMarksToggleLabel},
 			{shortcut: "esc `", action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
 			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
-		},
-		// History
-		{
+		}},
+		{title: "History", collapsible: true, items: []menuItemDef{
 			{label: "Undo", shortcut: "esc u", action: (*App).menuUndo, enabled: (*App).hasUndo},
 			{label: "Redo", shortcut: "esc r", action: (*App).menuRedo, enabled: (*App).hasRedo},
 			{label: "Revert file", action: (*App).menuRevert, enabled: (*App).hasRevert},
-		},
-		// Search
-		{
+		}},
+		{title: "Search", collapsible: true, items: []menuItemDef{
 			{label: paletteMenuLabel, shortcut: "esc a", action: (*App).menuCommandPalette, enabled: alwaysTrue},
 			{label: "Find in file", shortcut: "esc f", action: (*App).menuFind, enabled: (*App).hasFindable},
 			{label: "Find file in project", shortcut: "esc p", action: (*App).menuFindFile, enabled: (*App).hasFinder},
-		},
+		}},
 		// Navigation — browser-style back/forward through the file
 		// history (tree, tabs, finder, and definition jumps all feed it).
-		{
+		{title: "Navigation", collapsible: true, items: []menuItemDef{
 			{label: "Go back", shortcut: "esc o / alt+←", action: (*App).menuNavBack, enabled: (*App).hasNavBack},
 			{label: "Go forward", shortcut: "esc O / alt+→", action: (*App).menuNavForward, enabled: (*App).hasNavForward},
-		},
-		// Git
-		{
+		}},
+		{title: "Git", collapsible: true, items: []menuItemDef{
 			{label: "Next change", shortcut: "esc h", action: (*App).menuNextHunk, enabled: (*App).hasDiffHunks},
 			{label: "Previous change", shortcut: "esc H", action: (*App).menuPrevHunk, enabled: (*App).hasDiffHunks},
 			{label: "Stage file", action: (*App).menuGitStageFile, enabled: (*App).hasStageableFile},
@@ -225,14 +240,13 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Pop stash", action: (*App).menuGitStashPop, enabled: (*App).hasGitStash},
 			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
 			{shortcut: "esc g", action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
-		},
+		}},
 		// Code intelligence (LSP-backed; rows dim when no server)
-		{
+		{title: "Code", collapsible: true, items: []menuItemDef{
 			{label: "Go to definition", shortcut: "esc d", action: (*App).menuGoToDefinition, enabled: (*App).hasLSPActions},
 			{label: "Hover info", shortcut: "esc i", action: (*App).menuHoverInfo, enabled: (*App).hasLSPActions},
-		},
-		// File actions
-		{
+		}},
+		{title: "File", collapsible: true, items: []menuItemDef{
 			{shortcut: "esc n", action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
 			{label: "Rename file", action: (*App).menuRename, enabled: (*App).hasFileTab},
 			{label: "Delete file", action: (*App).menuDelete, enabled: (*App).hasFileTab},
@@ -245,9 +259,8 @@ func builtinMenuGroups() [][]menuItemDef {
 			{action: (*App).menuZipFolder, enabled: alwaysTrue, labelFor: (*App).zipFolderLabel},
 			{label: "Copy relative path", action: (*App).menuCopyRelativePath, enabled: (*App).hasFileTab},
 			{label: "Copy absolute path", action: (*App).menuCopyAbsolutePath, enabled: (*App).hasFileTab},
-		},
-		// Clipboard + line editing
-		{
+		}},
+		{title: "Edit", collapsible: true, items: []menuItemDef{
 			{label: "Copy selection", shortcut: "cmd+c", action: (*App).menuCopy, enabled: (*App).hasSelection},
 			{label: "Cut selection", action: (*App).menuCut, enabled: (*App).hasSelection},
 			{label: "Paste", shortcut: "cmd+v", action: (*App).menuPaste, enabled: (*App).hasClipboard},
@@ -255,11 +268,10 @@ func builtinMenuGroups() [][]menuItemDef {
 			{label: "Duplicate line", shortcut: "ctrl+d", action: (*App).menuDuplicateLines, enabled: (*App).hasEditableTab},
 			{label: "Move line up", shortcut: "alt+↑", action: (*App).menuMoveLinesUp, enabled: (*App).hasEditableTab},
 			{label: "Move line down", shortcut: "alt+↓", action: (*App).menuMoveLinesDown, enabled: (*App).hasEditableTab},
-		},
-		// Quit
-		{
+		}},
+		{title: "Quit", collapsible: false, items: []menuItemDef{
 			{label: "Quit editor", shortcut: "esc q", action: (*App).menuQuit, enabled: alwaysTrue},
-		},
+		}},
 	}
 }
 
@@ -267,58 +279,99 @@ func builtinMenuGroups() [][]menuItemDef {
 // (currently just Quit — which has no preconditions).
 func alwaysTrue(*App) bool { return true }
 
-// menuLayout flattens the visible menu groups into a single ordered
-// slice of items with relY positions assigned, plus the divider rows
-// and the modal's total cell height. Custom actions (when configured)
-// get spliced in as their own group right before the Quit row, so
-// they sit at the bottom of the menu where the user reaches for
+// visibleMenuGroups returns the built-in groups with any configured
+// custom actions spliced in as their own collapsible group right before
+// Quit, so they sit at the bottom of the menu where the user reaches for
 // "what do I do with this file" actions. Recomputed on every call —
 // cheap, and lets the layout react when actions.json is reloaded
 // mid-session.
-func (a *App) menuLayout() (items []menuItemDef, dividers []int, modalHeight int) {
-	groups := append([][]menuItemDef{}, builtinMenuGroups()...)
-	if len(a.customActions) > 0 {
-		ca := make([]menuItemDef, 0, len(a.customActions))
-		for i := range a.customActions {
-			i := i // capture
-			// Custom actions are user-defined shell — we don't try to
-			// guess from the command string whether it needs $FILE.
-			// "Upgrade r-ed" obviously doesn't; "Open on
-			// computer" obviously does. Both should be runnable from
-			// the menu; if a $FILE-dependent command is invoked with
-			// no tab open it'll fail with a real error and our info
-			// modal surfaces it. Better that than getting the
-			// heuristic wrong half the time.
-			ca = append(ca, menuItemDef{
-				label:   a.customActions[i].Label,
-				action:  func(app *App) { app.runCustomAction(i) },
-				enabled: alwaysTrue,
-			})
-		}
-		// Splice in just before the final group (Quit). builtinMenuGroups
-		// guarantees Quit is last; if anyone reorders that, the test
-		// pinning custom-actions placement catches it.
-		quit := groups[len(groups)-1]
-		groups = append(groups[:len(groups)-1], ca, quit)
+func (a *App) visibleMenuGroups() []menuGroup {
+	groups := builtinMenuGroups()
+	if len(a.customActions) == 0 {
+		return groups
 	}
+	ca := make([]menuItemDef, 0, len(a.customActions))
+	for i := range a.customActions {
+		i := i // capture
+		// Custom actions are user-defined shell — we don't try to guess
+		// from the command string whether it needs $FILE. "Upgrade r-ed"
+		// obviously doesn't; "Open on computer" obviously does. Both
+		// should be runnable from the menu; if a $FILE-dependent command
+		// is invoked with no tab open it'll fail with a real error and
+		// our info modal surfaces it. Better that than getting the
+		// heuristic wrong half the time.
+		ca = append(ca, menuItemDef{
+			label:   a.customActions[i].Label,
+			action:  func(app *App) { app.runCustomAction(i) },
+			enabled: alwaysTrue,
+		})
+	}
+	// Splice in just before the final group (Quit). builtinMenuGroups
+	// guarantees Quit is last; if anyone reorders that, the test pinning
+	// custom-actions placement catches it.
+	quit := groups[len(groups)-1]
+	custom := menuGroup{title: "Custom", collapsible: true, items: ca}
+	return append(groups[:len(groups)-1:len(groups)-1], custom, quit)
+}
 
-	// Title at relY 1, divider under it at relY 2, first item at relY 3.
+// menuLayout flattens the visible menu groups into a single ordered
+// slice of rows with relY positions assigned, plus the divider rows and
+// the modal's total cell height. Each collapsible group contributes a
+// header row (whose action toggles the section) followed by its items —
+// unless the section is collapsed, in which case only the header shows.
+// A non-collapsible group (Quit) gets a leading divider instead of a
+// header. Recomputed on every call so folding a section reflows the
+// whole modal.
+func (a *App) menuLayout() (items []menuItemDef, dividers []int, modalHeight int) {
+	// Title at relY 1, divider under it at relY 2, first row at relY 3.
 	dividers = []int{2}
 	y := 3
-	for gi, g := range groups {
-		for _, it := range g {
-			it.relY = y
-			items = append(items, it)
+	for _, g := range a.visibleMenuGroups() {
+		if g.collapsible {
+			title := g.title // capture for the toggle closure
+			items = append(items, menuItemDef{
+				label:   title,
+				header:  true,
+				relY:    y,
+				enabled: alwaysTrue,
+				action:  func(app *App) { app.toggleMenuSection(title) },
+			})
+			y++
+			if a.sectionCollapsed(title) {
+				continue // items hidden; only the header occupies a row
+			}
+		} else {
+			// Headerless group: a divider stands in for the missing
+			// title so it doesn't blend into the section above.
+			dividers = append(dividers, y)
 			y++
 		}
-		if gi < len(groups)-1 {
-			dividers = append(dividers, y)
+		for _, it := range g.items {
+			it.relY = y
+			items = append(items, it)
 			y++
 		}
 	}
 	// y now points at the bottom border row; height is one beyond.
 	modalHeight = y + 1
 	return items, dividers, modalHeight
+}
+
+// sectionCollapsed reports whether the named menu section is folded.
+// Reads a nil map safely, so the default (every section expanded) needs
+// no initialization.
+func (a *App) sectionCollapsed(title string) bool {
+	return a.menuCollapsed[title]
+}
+
+// toggleMenuSection folds or unfolds the named section in place — the
+// header row's click / Enter action. The menu stays open (unlike an
+// action row) so the user can fold several sections in one visit.
+func (a *App) toggleMenuSection(title string) {
+	if a.menuCollapsed == nil {
+		a.menuCollapsed = map[string]bool{}
+	}
+	a.menuCollapsed[title] = !a.menuCollapsed[title]
 }
 
 // App is the editor's top-level state holder and event-loop owner.
@@ -399,6 +452,13 @@ type App struct {
 	// against the live geometry so a mid-menu terminal resize can't
 	// strand the offset past the end.
 	menuScroll int
+
+	// menuCollapsed records which ≡-menu sections the user has folded,
+	// keyed by group title. Session-only (like menuScroll and the panel
+	// sizes) and survives menu close/reopen so a fold sticks for the
+	// session. nil until the first fold — sectionCollapsed reads it
+	// nil-safely, so every section starts expanded.
+	menuCollapsed map[string]bool
 
 	// modal is the active secondary overlay (prompt, confirm,
 	// dirty-close, form, tree context menu, file finder) or nil when
@@ -2164,13 +2224,23 @@ func (a *App) pasteClipboard() {
 
 // openMenu shows the action modal. While it is up, the editor doesn't
 // receive typed keys, and clicks outside the modal dismiss it. We pre-
-// select the first enabled row so Down/Up/Enter keyboard navigation has
-// somewhere sensible to start.
+// select the first enabled action row so Down/Up/Enter keyboard
+// navigation has somewhere sensible to start — deliberately NOT a
+// section header, so a reflex Enter runs an action rather than folding
+// the first section.
 func (a *App) openMenu() {
 	a.closeAllModals()
 	a.menuOpen = true
 	a.menuScroll = 0
-	a.menuMoveSelection(1)
+	a.hoveredMenuRow = -1
+	items, _, _ := a.menuLayout()
+	for i, it := range items {
+		if !it.header && it.enabled(a) {
+			a.hoveredMenuRow = i
+			a.menuEnsureHoveredVisible()
+			return
+		}
+	}
 }
 
 // menuMoveSelection advances hoveredMenuRow to the next (dir=+1) or
@@ -3000,9 +3070,13 @@ func (a *App) drawMenu() {
 
 	// Action rows. Hovered (enabled) rows get a tinted full-width
 	// background so they read like a hovered button in a GUI menu.
+	// Section headers carry a fold chevron (▾ open / ▸ folded) in the
+	// mx+2 gutter and a bold accent title; item rows leave that gutter
+	// empty so they read as nested under the header above them.
 	hoverBg := a.theme.Selection
 	hoverStyle := tcell.StyleDefault.Background(hoverBg).Foreground(a.theme.Text).Bold(true)
 	hoverChevStyle := tcell.StyleDefault.Background(hoverBg).Foreground(a.theme.AccentSoft).Bold(true)
+	headerStyle := tcell.StyleDefault.Background(bg).Foreground(a.theme.Accent).Bold(true)
 	for i, item := range items {
 		cy := my + item.relY - scroll
 		if cy < my+menuPinnedRows || cy > my+mh-2 {
@@ -3020,6 +3094,9 @@ func (a *App) drawMenu() {
 			}
 			labelStyle = hoverStyle
 			chevStyle = hoverChevStyle
+		case item.header:
+			labelStyle = headerStyle
+			chevStyle = chevronStyle
 		case enabled:
 			labelStyle = bgStyle
 			chevStyle = chevronStyle
@@ -3033,7 +3110,17 @@ func (a *App) drawMenu() {
 		if item.labelFor != nil {
 			label = item.labelFor(a)
 		}
-		drawAt(a.screen, mx+2, cy, "▸", chevStyle)
+		// A header owns the fold chevron and never shows a shortcut; an
+		// item's gutter stays blank so the hierarchy reads at a glance.
+		if item.header {
+			chev := "▾"
+			if a.sectionCollapsed(item.label) {
+				chev = "▸"
+			}
+			drawAt(a.screen, mx+2, cy, chev, chevStyle)
+			drawAt(a.screen, mx+4, cy, label, labelStyle)
+			continue
+		}
 		drawAt(a.screen, mx+4, cy, label, labelStyle)
 		// Shortcut hint, right-aligned like a GUI menu's accelerator
 		// column. Always muted — the label carries the row's state

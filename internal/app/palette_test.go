@@ -238,6 +238,32 @@ func TestPalette_CustomActionsListed(t *testing.T) {
 	}
 }
 
+// TestPalette_FoldedSectionActionsStillListed pins that the ≡-menu fold
+// state is a display concern only: collapsing a section in the menu must
+// NOT remove its actions from the command palette, and the palette must
+// never surface a section header as a fake command.
+func TestPalette_FoldedSectionActionsStillListed(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	a.toggleMenuSection("File") // fold the File section in the menu
+	a.openPalette()
+
+	var sawNewFile, sawHeader bool
+	for _, it := range paletteOf(a).items {
+		if it.label == "New file" { // a File-section action
+			sawNewFile = true
+		}
+		if it.label == "File" || it.label == "Git" || it.label == "Tab" {
+			sawHeader = true // a section title leaked in as a command
+		}
+	}
+	if !sawNewFile {
+		t.Error("folding a menu section hid its action from the palette")
+	}
+	if sawHeader {
+		t.Error("a section header leaked into the palette as a command")
+	}
+}
+
 // TestLeader_AFiresPalette pins the Esc-a binding so a leader-table
 // refactor can't quietly drop the palette shortcut.
 func TestLeader_AFiresPalette(t *testing.T) {
