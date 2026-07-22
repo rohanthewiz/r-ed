@@ -241,6 +241,7 @@ func builtinMenuGroups() []menuGroup {
 			{label: "Stash changes", action: (*App).menuGitStash, enabled: (*App).hasGitChanges},
 			{label: "Pop stash", action: (*App).menuGitStashPop, enabled: (*App).hasGitStash},
 			{label: "Switch branch", action: (*App).menuGitSwitchBranch, enabled: (*App).hasGitRepo},
+			{label: "Recent branches", action: (*App).menuGitRecentBranches, enabled: (*App).hasGitRepo},
 			{shortcut: "esc g", action: (*App).menuToggleGitPanel, enabled: (*App).hasGitRepo, labelFor: (*App).gitPanelToggleLabel},
 		}},
 		// Code intelligence (LSP-backed; rows dim when no server)
