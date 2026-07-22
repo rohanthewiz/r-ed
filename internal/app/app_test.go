@@ -78,6 +78,14 @@ func newTestApp(t *testing.T, root string) *App {
 	prevTermEval := newTermEvaluator
 	newTermEvaluator = func(io.Writer) termEvaluator { return &fakeTermEval{} }
 	t.Cleanup(func() { newTermEvaluator = prevTermEval })
+	// Disable rc sourcing by default: ensureTermSession would otherwise
+	// try to source the dev machine's real ~/.config/r-ed/rc.grsh, whose
+	// `source` eval would show up in fakeTermEval.evals and skew command
+	// assertions. Rc tests opt back in by pointing termRcPath at a temp
+	// file.
+	prevRcPath := termRcPath
+	termRcPath = func() string { return "" }
+	t.Cleanup(func() { termRcPath = prevRcPath })
 	return a
 }
 

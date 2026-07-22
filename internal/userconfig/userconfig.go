@@ -105,20 +105,40 @@ type fileFormat struct {
 	ExecMarks string `json:"execmarks,omitempty"`
 }
 
-// DefaultPath returns the canonical config-file location:
-// $XDG_CONFIG_HOME/r-ed/config.json, falling back to
-// ~/.config/r-ed/config.json. Returns "" when neither resolves
-// — callers should treat that as "use defaults".
-func DefaultPath() string {
+// configFilePath resolves the r-ed config directory
+// ($XDG_CONFIG_HOME/r-ed, else ~/.config/r-ed) and joins name onto it.
+// Returns "" when neither XDG_CONFIG_HOME nor a home directory resolves,
+// which callers treat as "no config location — use defaults / skip".
+// DefaultPath and RcPath both go through here so the two files can never
+// drift into different directories.
+func configFilePath(name string) string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "r-ed", "config.json")
+		return filepath.Join(xdg, "r-ed", name)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "r-ed", "config.json")
+	return filepath.Join(home, ".config", "r-ed", name)
 }
+
+// DefaultPath returns the canonical config-file location:
+// $XDG_CONFIG_HOME/r-ed/config.json, falling back to
+// ~/.config/r-ed/config.json. Returns "" when neither resolves
+// — callers should treat that as "use defaults".
+func DefaultPath() string { return configFilePath("config.json") }
+
+// RcPath returns the canonical grsh rc-file location:
+// $XDG_CONFIG_HOME/r-ed/rc.grsh, falling back to ~/.config/r-ed/rc.grsh
+// (or "" when no config location resolves).
+//
+// This is the grsh analog of ~/.zshrc: the embedded terminal panel
+// sources it once, when the grsh session is created, so a user's aliases
+// and functions are available in every r-ed shell. It MUST be grsh
+// syntax, not zsh — the terminal embeds grsh (its own shell language),
+// so it never reads ~/.zshrc or any zsh startup file, and this file is
+// exactly the gap that fills.
+func RcPath() string { return configFilePath("rc.grsh") }
 
 // Load reads and parses the config file at path, returning a Config
 // with defaults filled in for any missing or blank fields.

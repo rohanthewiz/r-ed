@@ -1072,3 +1072,73 @@ func TestTermLeftDockDraw(t *testing.T) {
 		t.Fatalf("top-left of screen = %q, want the strip header title", b.String())
 	}
 }
+
+// TestTermRc_SourcedWhenPresent verifies ensureTermSession sources the
+// user's grsh rc file into a fresh session: the very first Eval the
+// session sees is `source '<path>'`, so aliases defined there are live
+// before any typed command. This is the grsh analog of ~/.zshrc — the
+// panel embeds grsh (not zsh), so without this nothing would load it.
+func TestTermRc_SourcedWhenPresent(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	rc := filepath.Join(t.TempDir(), "rc.grsh")
+	if err := os.WriteFile(rc, []byte("alias ll='ls -la'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// newTestApp's cleanup restores the real termRcPath after the test.
+	termRcPath = func() string { return rc }
+
+	f := openTestTerm(t, a)
+
+	// The source eval runs synchronously inside ensureTermSession (a real
+	// shell blocks on its rc), so it is already recorded — no waitEvals.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.evals) != 1 {
+		t.Fatalf("expected exactly the rc source eval, got %d: %q", len(f.evals), f.evals)
+	}
+	if want := "source '" + rc + "'"; f.evals[0] != want {
+		t.Fatalf("rc eval = %q, want %q", f.evals[0], want)
+	}
+}
+
+// TestTermRc_SkippedWhenAbsent verifies the silent-degradation contract:
+// with no rc file present (the common case), opening the panel issues no
+// source eval at all and the terminal comes up clean.
+func TestTermRc_SkippedWhenAbsent(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	// A path that does not exist — sourceTermRc must stat-and-skip.
+	termRcPath = func() string { return filepath.Join(t.TempDir(), "does-not-exist.grsh") }
+
+	f := openTestTerm(t, a)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.evals) != 0 {
+		t.Fatalf("absent rc should issue no eval, got %q", f.evals)
+	}
+}
+
+// TestTermRc_ErrorSurfacedInScrollback verifies a broken rc is reported
+// inline (a termErr scrollback line) rather than swallowed or raised as a
+// modal — the same "tell the user, keep running" stance as the formatters.
+func TestTermRc_ErrorSurfacedInScrollback(t *testing.T) {
+	a := newTestApp(t, t.TempDir())
+	rc := filepath.Join(t.TempDir(), "rc.grsh")
+	if err := os.WriteFile(rc, []byte("boom\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	termRcPath = func() string { return rc }
+
+	// The rc source must return an error, so inject a fake whose Eval
+	// fails. newTestApp already registered a cleanup that restores
+	// newTermEvaluator, so reassigning here is safe.
+	newTermEvaluator = func(io.Writer) termEvaluator {
+		return &fakeTermEval{evalErr: errors.New("rc: unknown command")}
+	}
+
+	a.menuToggleTerminal()
+
+	if n := len(a.term.lines); n == 0 || a.term.lines[n-1].kind != termErr {
+		t.Fatalf("broken rc should append a termErr line, got %+v", a.term.lines)
+	}
+}

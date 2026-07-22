@@ -174,6 +174,34 @@ func TestDefaultPathFallsBackToHome(t *testing.T) {
 	}
 }
 
+// TestRcPathHonoursXDG mirrors the DefaultPath XDG test for the grsh rc
+// file: the two must resolve to the same directory (rc.grsh sits next to
+// config.json), so config and shell customizations never split up.
+func TestRcPathHonoursXDG(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
+	got := RcPath()
+	want := filepath.Join("/tmp/xdg-test", "r-ed", "rc.grsh")
+	if got != want {
+		t.Fatalf("RcPath() = %q, want %q", got, want)
+	}
+	// Same directory as the config file — the shared-helper guarantee.
+	if filepath.Dir(got) != filepath.Dir(DefaultPath()) {
+		t.Fatalf("RcPath dir %q != DefaultPath dir %q", filepath.Dir(got), filepath.Dir(DefaultPath()))
+	}
+}
+
+// TestRcPathFallsBackToHome verifies the ~/.config/r-ed/rc.grsh fallback
+// when XDG_CONFIG_HOME isn't set.
+func TestRcPathFallsBackToHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "/tmp/home-test")
+	got := RcPath()
+	want := filepath.Join("/tmp/home-test", ".config", "r-ed", "rc.grsh")
+	if got != want {
+		t.Fatalf("RcPath() = %q, want %q", got, want)
+	}
+}
+
 // TestDefaultsAutoSaveOn pins the documented auto-save default: on.
 // Flipping this silently would change save semantics for every user
 // with no config file, so it gets its own guard.

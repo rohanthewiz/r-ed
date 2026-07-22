@@ -271,6 +271,17 @@ scope by design. House rules:
   create files.
 - grsh's `cd` chdirs the whole editor process (grsh's deliberate
   design) — keep r-ed's own file operations absolute-path based.
+- **rc file, the grsh analog of ~/.zshrc**: `ensureTermSession` sources
+  `~/.config/r-ed/rc.grsh` (`userconfig.RcPath`) into each fresh session
+  via `sourceTermRc`, so a user's aliases/functions load before the first
+  prompt. It embeds grsh, NOT zsh — it never reads any zsh startup file,
+  which is the whole reason this file exists, and it must be grsh syntax.
+  Same silent-degradation contract as the LSP/formatters: absent rc → no
+  eval, broken rc → one termErr scrollback line, never a modal. Sourced
+  SYNCHRONOUSLY (a real shell blocks on its rc; this also beats the race
+  where a typed command could outrun an async source). `termRcPath` is a
+  package var so tests point it at a temp file — newTestApp disables it
+  (returns "") so the dev machine's real rc.grsh never enters `evals`.
 - Tests inject `fakeTermEval` via the `newTermEvaluator` stub in
   newTestApp. Only TestTermRealGrshIntegration may execute a real
   command, and it is restricted to `echo`.

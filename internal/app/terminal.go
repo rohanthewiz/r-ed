@@ -109,6 +109,13 @@ var newTermEvaluator = func(out io.Writer) termEvaluator {
 // internal exit error, so tests stub this to simulate `exit`.
 var termExitCode = grsh.ExitCode
 
+// termRcPath resolves the user's grsh rc file — the grsh analog of
+// ~/.zshrc that ensureTermSession sources into a fresh session. A
+// package var (like newTermEvaluator) so tests can point it at a temp
+// file, or disable it, without ever touching the real
+// ~/.config/r-ed/rc.grsh on the dev machine.
+var termRcPath = userconfig.RcPath
+
 // termLineKind selects the style a scrollback line renders with.
 type termLineKind int
 
@@ -325,6 +332,51 @@ func (a *App) ensureTermSession() {
 	a.term.writer = w
 	a.term.sess = newTermEvaluator(w)
 	a.term.histIdx = 0
+	a.sourceTermRc()
+}
+
+// sourceTermRc runs the user's grsh rc file (~/.config/r-ed/rc.grsh —
+// the grsh analog of ~/.zshrc) into the freshly-created session, so the
+// aliases and functions defined there are live before the first prompt.
+// It exists because the panel embeds grsh, not zsh: a plain grsh session
+// starts blank and never reads any zsh startup file, so without this the
+// user's shell customizations simply never appear here.
+//
+// Silent degradation, same contract as the LSP and formatter
+// integrations: no rc file (the common case) is a no-op, and a broken rc
+// surfaces grsh's own one-line diagnostic in the scrollback rather than a
+// modal. The eval is synchronous on the main loop by design — a real
+// shell also blocks until its rc finishes, and doing it here (before
+// submitTermCommand can ever run) guarantees the first typed command
+// already sees the aliases. An rc is expected to be a handful of
+// alias/function definitions; it is not the place for long-running work,
+// exactly as with ~/.zshrc.
+func (a *App) sourceTermRc() {
+	if a.term.sess == nil {
+		return
+	}
+	path := termRcPath()
+	if path == "" {
+		return
+	}
+	// An absent rc is the common case and must stay silent, so Go checks
+	// existence rather than letting grsh's `source` error on a missing
+	// file. Any other stat error (a permission problem) is treated the
+	// same way — the terminal must still open — so we only proceed on a
+	// clean stat.
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	// Single-quote the path so a space in it can't split the argument;
+	// grsh's `source` reads and runs the file in this session and gives
+	// file:line diagnostics for any error inside it. (A path containing a
+	// literal single quote — absurd for a config dir — is unsupported.)
+	if err := a.term.sess.Eval("source '" + path + "'"); err != nil {
+		if _, isExit := termExitCode(err); isExit {
+			return // an rc that calls `exit` — nothing to report
+		}
+		a.termAppendLine(termLine{text: grsh.UserMessage(err), kind: termErr})
+	}
 }
 
 // -----------------------------------------------------------------------------
