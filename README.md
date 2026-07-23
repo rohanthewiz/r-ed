@@ -66,6 +66,11 @@ The goals, in order:
 - **Format on save** — opt-in per-project via `.r-ed/format.json`
   with a first-run trust prompt so cloning a repo never silently
   executes its commands. See [Format on save](#format-on-save).
+- **GitHub Copilot, optional** — inline ghost-text completions plus a
+  chat panel, powered by GitHub's official `copilot-language-server`.
+  Installing that binary is the whole opt-in; without it the editor
+  simply doesn't mention Copilot. See
+  [AI features](#ai-features-github-copilot).
 - **Single binary, no CGO** — cross-compiled for macOS, Linux, and
   Windows on amd64 and arm64.
 
@@ -493,6 +498,108 @@ project where:
 This keeps your personal preferences out of repos that don't want
 them while still making it one click to opt a project in.
 
+## AI features (GitHub Copilot)
+
+r-ed integrates GitHub Copilot two ways — **inline ghost-text
+completions** while you type, and a **chat panel** — both driven by
+GitHub's official [`copilot-language-server`](https://github.com/github/copilot-language-server-release).
+The integration follows the same philosophy as everything else here:
+
+- **Installing the binary is the opt-in.** r-ed never bundles it,
+  downloads it, or nags you about it. No binary on `$PATH` → no
+  Copilot anywhere in the UI, and the editor works exactly as before.
+- **You need a Copilot subscription** on the GitHub account you sign
+  in with (the free tier works too).
+
+### 1. Install `copilot-language-server`
+
+Any of these, as long as the binary ends up on your `$PATH`:
+
+```sh
+# npm (easiest if you have Node)
+npm install -g @github/copilot-language-server
+
+# or: download a native binary (no Node needed) from
+#     https://github.com/github/copilot-language-server-release/releases
+#     extract it, chmod +x, and drop it in ~/.local/bin (or anywhere on $PATH)
+```
+
+Verify with `copilot-language-server --version`. If you installed it
+while r-ed was already running, toggle **≡ → Copilot → Enable/Disable
+Copilot** off and on — that's the deliberate "try again" gesture.
+
+### 2. Sign in (once per machine)
+
+Open **≡ → Copilot → Sign in to GitHub**. r-ed runs GitHub's device
+flow:
+
+1. A dialog shows a short device code and the URL
+   `github.com/login/device`.
+2. Pick **Yes** — the code is copied to your clipboard and your
+   browser opens the URL. (Over SSH the browser can't open on the
+   remote box, of course — just visit the URL on your laptop; the
+   code stays visible in the status bar the whole time.)
+3. Paste the code in the browser and approve. When GitHub finishes,
+   the status bar shows `Copilot ✓` and the menu row flips to
+   **Sign out**.
+
+Credentials are stored by `copilot-language-server` itself and shared
+with Copilot in other editors, so this is once per machine — not per
+project, not per session.
+
+### 3. Inline suggestions (ghost text)
+
+On by default once you're signed in. Type, pause for a beat, and a
+dimmed suggestion appears at your cursor:
+
+- **`Tab` accepts** the suggestion (with nothing showing, `Tab` is
+  plain indentation as always).
+- **`Esc` dismisses** it — as does moving the cursor or just typing
+  through it.
+- Multi-line suggestions show their first line inline plus a `⋯+N`
+  marker for the rest; accepting inserts the whole thing (one undo
+  step).
+- Suggestions work in any text file, not just Go.
+
+Don't want ghost text but still want sign-in/chat? **≡ → Copilot →
+Disable inline suggestions** turns off just this feature, persisted
+across restarts.
+
+### 4. Chat panel
+
+Open **≡ → View → Show Copilot chat**. The panel docks as a
+full-height strip on the **left** edge (the file tree slides over to
+the right while it's open):
+
+- Type in the composer at the bottom, `Enter` sends. Answers stream
+  in live; `↑` / `↓` recall previous prompts.
+- **⏹ stops** an answer mid-stream; **✕** (or the menu toggle) hides
+  the panel — the conversation survives hide/show.
+- Drag the panel's right-edge splitter to resize; scroll wheel and
+  `PgUp`/`PgDn` move through the transcript.
+- The chat panel and a **left-docked terminal** share the left edge:
+  opening one tucks the other away (a bottom-docked terminal coexists
+  fine).
+- Chat is **read-only by design** in this version: the agent can
+  answer questions and write code *in the chat*, but requests to
+  touch your files are automatically declined (you'll see a
+  `⊘ declined` note in the transcript when that happens).
+
+### Turning it off
+
+Two persisted switches, both in the `≡ → Copilot` menu and in
+`~/.config/r-ed/config.json`:
+
+```json
+{
+  "copilot": "off",      // never spawn the sidecar at all
+  "suggestions": "off"   // keep Copilot (sign-in, chat) but no ghost text
+}
+```
+
+Both default to `"on"` — which costs nothing until you actually
+install the binary and sign in.
+
 ## Project layout
 
 ```
@@ -502,6 +609,7 @@ them while still making it one click to opt a project in.
 │   ├── app/                  # Event loop, layout, menu modal, splitter
 │   ├── editor/               # Buffer, tab, cursor, syntax highlighting
 │   ├── filetree/             # Lazy directory tree with identity-preserving refresh
+│   ├── lsp/                  # JSON-RPC client (gopls, Copilot sidecar + ACP chat)
 │   ├── clipboard/            # OSC 52 clipboard with tmux passthrough
 │   ├── customactions/        # Loader for ~/.config/r-ed/actions.json
 │   ├── format/               # Format-on-save config + trust store
