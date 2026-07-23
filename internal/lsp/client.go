@@ -135,6 +135,15 @@ func Start(dir, bin string, args []string, onNotify func(string, json.RawMessage
 // Times out after callTimeout so a wedged server can't hang the
 // calling goroutine forever. Safe from any goroutine.
 func (c *Client) Call(method string, params, result any) error {
+	return c.CallWithTimeout(method, params, result, callTimeout)
+}
+
+// CallWithTimeout is Call with an explicit response deadline. It exists
+// for requests that legitimately outlive the 5s LSP budget — the
+// Copilot device-flow confirmation blocks server-side until the user
+// finishes authenticating in a browser, which takes minutes. Callers
+// that can't say why they need longer should use Call.
+func (c *Client) CallWithTimeout(method string, params, result any, timeout time.Duration) error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -165,7 +174,7 @@ func (c *Client) Call(method string, params, result any) error {
 			return json.Unmarshal(resp.Result, result)
 		}
 		return nil
-	case <-time.After(callTimeout):
+	case <-time.After(timeout):
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()

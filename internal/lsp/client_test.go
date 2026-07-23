@@ -102,6 +102,41 @@ func TestCallRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCallWithTimeout pins the two behaviors CallWithTimeout exists
+// for: a response that arrives after the caller's deadline fails as a
+// timeout (and unblocks — a wedged server can't hang the goroutine),
+// while a longer deadline than callTimeout lets a slow-but-legitimate
+// exchange (the Copilot device-flow confirmation) complete.
+func TestCallWithTimeout(t *testing.T) {
+	c, srv, done := pipeClient(t, nil, nil)
+	defer done()
+
+	// Short deadline, request delivered but never answered: must fail
+	// fast rather than block. The call runs on a goroutine because the
+	// in-memory pipe's write blocks until the fake server reads.
+	start := time.Now()
+	slowCh := make(chan error, 1)
+	go func() { slowCh <- c.CallWithTimeout("test/slow", nil, nil, 50*time.Millisecond) }()
+	_ = srv.read(t) // deliver it; deliberately no response
+	err := <-slowCh
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("short-deadline call: err = %v, want timeout", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("timed-out call blocked far past its deadline")
+	}
+
+	// Response after a delay, but within a generous deadline: succeeds.
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.CallWithTimeout("test/eventually", nil, nil, 5*time.Second) }()
+	m := srv.read(t)
+	time.Sleep(100 * time.Millisecond)
+	srv.write(t, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":null}`, *m.ID))
+	if err := <-errCh; err != nil {
+		t.Fatalf("delayed-but-in-deadline call: %v", err)
+	}
+}
+
 // TestCallServerError pins that a JSON-RPC error response surfaces as a
 // Go error naming the method — the caller's only diagnostic.
 func TestCallServerError(t *testing.T) {

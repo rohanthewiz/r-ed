@@ -249,6 +249,14 @@ func builtinMenuGroups() []menuGroup {
 			{label: "Go to definition", shortcut: "esc d", action: (*App).menuGoToDefinition, enabled: (*App).hasLSPActions},
 			{label: "Hover info", shortcut: "esc i", action: (*App).menuHoverInfo, enabled: (*App).hasLSPActions},
 		}},
+		// GitHub Copilot (copilot-language-server sidecar). Rows stay
+		// clickable even when the sidecar is unavailable — the action
+		// flashes WHY instead of dimming into a dead end, because Sign
+		// in is the first thing a new user reaches for. See copilot.go.
+		{title: "Copilot", collapsible: true, items: []menuItemDef{
+			{action: (*App).menuCopilotAuth, enabled: alwaysTrue, labelFor: (*App).copilotAuthLabel},
+			{action: (*App).menuToggleCopilot, enabled: alwaysTrue, labelFor: (*App).copilotToggleLabel},
+		}},
 		{title: "File", collapsible: true, items: []menuItemDef{
 			{shortcut: "esc n", action: (*App).menuNewFile, enabled: alwaysTrue, labelFor: (*App).newFileLabel},
 			{label: "Rename file", action: (*App).menuRename, enabled: (*App).hasFileTab},
@@ -643,6 +651,12 @@ type App struct {
 	// the main loop; background work posts lsp*Events. See lsp.go.
 	lsp lspState
 
+	// copilot holds the GitHub Copilot sidecar state: the
+	// copilot-language-server connection and the sign-in machinery.
+	// Mutated only on the main loop; background work posts
+	// copilot*Events. See copilot.go.
+	copilot copilotState
+
 	// nav is the app-wide file-navigation history (Go back / Go
 	// forward). Recorded centrally in openFile and tabBarClick so every
 	// navigation surface — tree, tabs, finder, go-to-definition — feeds
@@ -723,6 +737,11 @@ func New(rootDir string) (*App, error) {
 	a.seedMenuFoldDefault()
 	a.flash("Welcome — click a file to open · click  ≡  for the menu")
 	a.startTreeRefresh()
+	// Start the Copilot sidecar eagerly (async, no-op when disabled or
+	// not installed) rather than on first file open: its only phase-1
+	// job is auth state, and knowing it at startup makes the ≡ labels
+	// and Sign in flow honest from the first click.
+	a.copilotEnsureStarted()
 	// Kick off the project file index in the background so that by
 	// the time the user hits Esc-p (or ≡ → Find file) the modal can
 	// open with results already in hand. On a 50k-file repo this
@@ -768,6 +787,7 @@ func (a *App) loadUserConfig() {
 	}
 	a.autoSaveEnabled = cfg.AutoSave
 	a.termDockLeft = cfg.TermDock == userconfig.TermDockLeft
+	a.copilot.enabled = cfg.Copilot
 }
 
 // refreshGitStatus re-runs `git status --porcelain` against the project
@@ -839,6 +859,7 @@ func (a *App) Close() {
 	a.stopAutoScroll()
 	a.stopAutoSave()
 	a.lspShutdown()
+	a.copilotShutdown()
 	if a.screen != nil {
 		a.screen.Fini()
 	}
@@ -925,6 +946,18 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleLSPDefinition(e)
 	case *lspHoverEvent:
 		a.handleLSPHover(e)
+	case *copilotReadyEvent:
+		a.handleCopilotReady(e)
+	case *copilotExitEvent:
+		a.handleCopilotExit()
+	case *copilotStatusEvent:
+		a.handleCopilotStatus(e)
+	case *copilotSignInEvent:
+		a.handleCopilotSignIn(e)
+	case *copilotSignInDoneEvent:
+		a.handleCopilotSignInDone(e)
+	case *copilotSignOutDoneEvent:
+		a.handleCopilotSignOutDone(e)
 	}
 	// After every dispatch, let the LSP layer notice buffer edits and
 	// (re-)arm its didChange debounce. Runs unconditionally because
@@ -3029,12 +3062,20 @@ func (a *App) drawStatusBar() {
 		a.screen.SetContent(cx, sy, ' ', nil, style)
 	}
 
-	// Right-side text: current git branch when we're inside a repo. Drawn
-	// first so the left-side text can be clipped against it and the two
-	// pieces never overlap on a narrow window.
-	var rightWidth int
+	// Right-side text: the Copilot fragment (device code mid-sign-in,
+	// quiet check mark when signed in) and the current git branch,
+	// dot-separated. Drawn first so the left-side text can be clipped
+	// against it and the two pieces never overlap on a narrow window.
+	var rightParts []string
+	if seg := a.copilotStatusSegment(); seg != "" {
+		rightParts = append(rightParts, seg)
+	}
 	if a.gitBranch != "" {
-		right := " " + a.gitBranch + " "
+		rightParts = append(rightParts, a.gitBranch)
+	}
+	var rightWidth int
+	if len(rightParts) > 0 {
+		right := " " + strings.Join(rightParts, " · ") + " "
 		rw := len([]rune(right))
 		if rw < sw {
 			drawAt(a.screen, sx+sw-rw, sy, right, style)

@@ -59,6 +59,7 @@ internal/editor/highlight.go  Chroma → []tcell.Style per line
 internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Render
 internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib only)
 internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
+internal/app/copilot.go       GitHub Copilot sidecar: lifecycle + device-flow sign-in
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
@@ -186,6 +187,39 @@ framework dependency. House rules it must keep obeying:
   never match the tabs — the "gopls installed but no squiggles" bug.
 - Tests kill the integration (`a.lsp.dead = true` in newTestApp) so
   openFile can't spawn a real gopls; LSP tests inject `fakeLSPConn`.
+
+### Copilot sidecar (app/copilot.go) — phase 1 of the AI integration
+Runs GitHub's official `copilot-language-server` (native binary, found
+on PATH like gopls) over the SAME `internal/lsp` JSON-RPC client — the
+transport is protocol-generic; do not add a second framing layer or an
+SDK dependency. House rules:
+
+- **Same contracts as LSP**: silent degradation (no binary → dead, no
+  nagging; installing the binary is the opt-in, the `"copilot"` config
+  key is the opt-out, default on), events-only (`copilot*Event`s; only
+  the main loop touches `App.copilot`), no auto-restart after a crash
+  (the ≡ enable/disable toggle is the deliberate retry path — enabling
+  clears the `dead` verdict).
+- **Auth is the device flow** via the server's custom methods: `signIn`
+  returns a user code + confirm command; the confirm
+  (`workspace/executeCommand`) BLOCKS until browser auth finishes,
+  which is why `lsp.Client` has `CallWithTimeout` — never funnel that
+  call through the 5s default. While it's pending the code stays in
+  the status bar (`pendingCode`), because the modal that showed it is
+  already gone.
+- **Menu rows stay clickable when unavailable** — unlike the dimming
+  LSP rows, `menuCopilotAuth` flashes WHY (disabled / not installed).
+  Sign in is a new user's first touch; a dimmed row is a dead end.
+- The handshake must send `initializationOptions.editorInfo` +
+  `editorPluginInfo` or the server refuses service.
+- Host side-effects (clipboard copy, browser open) go through the
+  stubbable vars `copilotCopyCode` / `copilotOpenBrowser`; newTestApp
+  neuters both and sets `a.copilot.dead = true` so tests never spawn a
+  real sidecar. Copilot tests inject `fakeCopilotConn`.
+- Planned next phases (owner-approved): ghost-text inline completions
+  (phase 2), then a chat panel via ACP (`--acp` mode, same binary,
+  phase 3) docked on the LEFT edge — the file tree stays RIGHT; that
+  unconventional arrangement is the owner's explicit preference.
 
 ### Navigation history (app/nav.go)
 Browser-style Go back / Go forward across files (≡ menu, Esc-o / Esc-O,
@@ -348,8 +382,8 @@ away. Tests build the App struct directly (not through `New`), so they
 still start expanded; opt into the collapsed default with
 `seedMenuFoldDefault`. Since headers and the top-zone rows are all rows,
 the geometry pins count them: `TestMenuLayout_NoCustomActions` expects
-2 top-zone rows + 46 group actions + 9 headers (57), height 63, dividers
-`[2, 5, 60]`.
+2 top-zone rows + 49 group actions + 10 headers (61), height 67, dividers
+`[2, 5, 64]`.
 
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.

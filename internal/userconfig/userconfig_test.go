@@ -444,3 +444,73 @@ func TestSaveExecMarks_RoundTripsAndPreserves(t *testing.T) {
 		t.Fatal("unknown key was dropped by the save round-trip")
 	}
 }
+
+// TestDefaultsCopilotOn pins the Copilot default: on, because the
+// sidecar only ever spawns when the user installed its binary — PATH
+// presence is the real opt-in, this key is just the opt-out.
+func TestDefaultsCopilotOn(t *testing.T) {
+	if !Defaults().Copilot {
+		t.Fatal("Defaults().Copilot = false, want true")
+	}
+}
+
+// TestLoadCopilotValues exercises the recognised copilot values and the
+// absent-field default, mirroring the icons/autosave/execmarks tables.
+func TestLoadCopilotValues(t *testing.T) {
+	cases := map[string]bool{
+		`{"copilot":"on"}`:    true,
+		`{"copilot":"off"}`:   false,
+		`{"copilot":" OFF "}`: false, // case/whitespace tolerant
+		`{}`:                  true,  // omitted field keeps the default
+	}
+	for body, want := range cases {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if cfg.Copilot != want {
+			t.Errorf("Load(%s).Copilot = %v, want %v", body, cfg.Copilot, want)
+		}
+	}
+}
+
+// TestLoadCopilotInvalid mirrors the house rule for every key: a typo'd
+// value is an error the caller can flash, not a silent fallback.
+func TestLoadCopilotInvalid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"copilot":"maybe"}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("invalid copilot value should error")
+	}
+}
+
+// TestSaveCopilot_RoundTripsAndPreserves saves the preference into a
+// config that already has hand-set keys and verifies both survive — the
+// same unknown-key guarantee every SaveX makes.
+func TestSaveCopilot_RoundTripsAndPreserves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	seed := "{\n  \"icons\": \"on\",\n  \"future-key\": 42\n}\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveCopilot(path, false); err != nil {
+		t.Fatalf("SaveCopilot: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if cfg.Copilot || cfg.Icons != IconsOn {
+		t.Fatalf("round trip lost values: copilot=%v icons=%q", cfg.Copilot, cfg.Icons)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "future-key") {
+		t.Fatal("unknown key was dropped by the save round-trip")
+	}
+}

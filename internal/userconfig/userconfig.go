@@ -25,6 +25,9 @@
 //	                        // left; the file tree flips to the right
 //	{"execmarks": "on"}     // default; append an ls -F '*' to executables
 //	{"execmarks": "off"}    // hide the executable marker in the file tree
+//	{"copilot": "on"}       // default; run copilot-language-server when
+//	                        // it's installed (silent no-op when absent)
+//	{"copilot": "off"}      // never spawn the Copilot sidecar
 //
 // The loader is best-effort the same way customactions is: missing
 // file → defaults, malformed file → error returned for the app to
@@ -83,13 +86,21 @@ type Config struct {
 	// '*' to executable regular files. Defaults to on. Persisted by the
 	// ≡ view toggle, same as AutoSave.
 	ExecMarks bool
+
+	// Copilot controls whether the editor runs the GitHub Copilot
+	// sidecar (copilot-language-server). Defaults to on because the
+	// binary is only ever spawned when the user has installed it —
+	// presence on PATH is itself the opt-in; this key is the opt-out
+	// for people who have the binary for other editors but don't want
+	// r-ed touching it. Persisted by the ≡ toggle, same as AutoSave.
+	Copilot bool
 }
 
 // Defaults returns a Config populated with the values used when no
 // config file is present (or every field in it is blank). Centralised
 // so tests and the loader can't drift from each other.
 func Defaults() Config {
-	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom, ExecMarks: true}
+	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom, ExecMarks: true, Copilot: true}
 }
 
 // fileFormat mirrors the on-disk JSON shape. We decode into this and
@@ -103,6 +114,7 @@ type fileFormat struct {
 	AutoSave  string `json:"autosave,omitempty"`
 	TermDock  string `json:"termdock,omitempty"`
 	ExecMarks string `json:"execmarks,omitempty"`
+	Copilot   string `json:"copilot,omitempty"`
 }
 
 // configFilePath resolves the r-ed config directory
@@ -231,6 +243,20 @@ func Load(path string) (Config, error) {
 			path, ff.ExecMarks,
 		)
 	}
+
+	switch strings.ToLower(strings.TrimSpace(ff.Copilot)) {
+	case "":
+		// field omitted — keep default
+	case "on":
+		cfg.Copilot = true
+	case "off":
+		cfg.Copilot = false
+	default:
+		return Defaults(), fmt.Errorf(
+			"%s: copilot must be \"on\" or \"off\" (got %q)",
+			path, ff.Copilot,
+		)
+	}
 	return cfg, nil
 }
 
@@ -258,6 +284,16 @@ func SaveExecMarks(path string, on bool) error {
 		val = "off"
 	}
 	return saveKey(path, "execmarks", val)
+}
+
+// SaveCopilot persists the Copilot-sidecar preference into the config
+// file at path. See saveKey for the round-trip guarantees.
+func SaveCopilot(path string, on bool) error {
+	val := "on"
+	if !on {
+		val = "off"
+	}
+	return saveKey(path, "copilot", val)
 }
 
 // saveKey writes one preference into the config file at path,
