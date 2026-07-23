@@ -632,6 +632,10 @@ func (a *App) menuToggleCopilot() {
 	a.copilot.enabled = !a.copilot.enabled
 	if a.copilot.enabled {
 		a.copilot.dead = false
+		// The chat agent shares the retry path: re-enabling clears its
+		// dead verdict too, so the next panel open attempts a fresh
+		// start instead of inheriting a stale "unavailable".
+		a.chat.dead = false
 		a.copilotEnsureStarted()
 		if a.copilot.dead {
 			a.flash("Copilot enabled — but copilot-language-server is not on PATH")
@@ -640,6 +644,12 @@ func (a *App) menuToggleCopilot() {
 		}
 	} else {
 		a.copilotShutdown()
+		// Disabling Copilot disables ALL of it — the chat agent goes
+		// down with the completion sidecar, and the panel closes so a
+		// dead surface isn't left on screen.
+		a.chatShutdown()
+		a.chat.open = false
+		a.chat.focused = false
 		a.flash("Copilot disabled")
 	}
 	if err := userconfig.SaveCopilot(userconfig.DefaultPath(), a.copilot.enabled); err != nil {

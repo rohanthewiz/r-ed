@@ -61,6 +61,8 @@ internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib onl
 internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
 internal/app/copilot.go       GitHub Copilot sidecar: lifecycle + device-flow sign-in
 internal/app/copilot_ghost.go Copilot phase 2: doc sync + inline completions (ghost text)
+internal/app/copilot_chat.go  Copilot phase 3: ACP chat panel (left strip, streaming turns)
+internal/lsp/acp.go           ACP framing (ndjson) + onRequest hook over the same Client
 internal/editor/ghost.go      GhostText display form + the render-row splice overlay
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
@@ -218,10 +220,6 @@ SDK dependency. House rules:
   stubbable vars `copilotCopyCode` / `copilotOpenBrowser`; newTestApp
   neuters both and sets `a.copilot.dead = true` so tests never spawn a
   real sidecar. Copilot tests inject `fakeCopilotConn`.
-- Planned next phase (owner-approved): a chat panel via ACP (`--acp`
-  mode, same binary, phase 3) docked on the LEFT edge — the file tree
-  stays RIGHT; that unconventional arrangement is the owner's explicit
-  preference.
 
 ### Copilot ghost text (app/copilot_ghost.go + editor/ghost.go) — phase 2
 Inline completions painted dimmed at the caret, Tab to accept. House
@@ -260,6 +258,58 @@ rules:
   Raw); the Tab only carries the display form. Esc clears the ghost as
   a side effect (never swallowed); `copilotDisconnect` tears down the
   ghost, timer, and doc maps.
+
+### Copilot chat panel (app/copilot_chat.go + lsp/acp.go) — phase 3
+A chat panel backed by the Agent Client Protocol: the SAME
+`copilot-language-server` binary run as a SECOND process in `--acp`
+mode (chat and completions are separate protocols by GitHub's design).
+House rules:
+
+- **ACP rides internal/lsp, not a new transport.** ACP is the same
+  JSON-RPC 2.0 envelope with two differences, both handled inside the
+  existing Client: ndjson framing (`Client.ndjson`, `StartACP` /
+  `NewClientACP` in lsp/acp.go) and real agent→client requests
+  answered via the `onRequest` hook (runs on the read loop — post
+  events, never touch App). Do not add an ACP SDK or a second framing
+  package.
+- **Same contracts as the sidecar**: silent degradation (no binary →
+  dead), events-only (`chat*Event`s; only the main loop touches
+  `App.chat`), no auto-restart (≡ Copilot off/on is the retry path,
+  which clears BOTH dead verdicts). No new config key — `"copilot"`
+  gates chat too; disabling it tears down and closes the panel. Auth
+  is phase 1's device flow (the agent reads the same credential
+  store); a failed handshake writes WHY into the transcript plus a
+  sign-in hint — unlike the sidecar, the open panel must never fail
+  silently.
+- **Docked LEFT, tree flips RIGHT** (owner preference). Every layout
+  helper pivots on `treeOnRight()` (`termDockLeft || chat.open`) and
+  `leftBlockW()` — don't reintroduce per-feature geometry branches.
+  The left edge is SINGLE-OCCUPANCY: opening chat closes a
+  left-docked terminal and vice versa (same rationale as the bottom
+  strip's terminal/git exclusivity); a bottom-docked terminal
+  coexists.
+- **Turns**: Enter → `session/prompt` (blocks for the whole turn —
+  `CallWithTimeout`, never the 5s default) while `session/update`
+  notifications stream `agent_message_chunk`s into the transcript;
+  chunks merge into ONE trailing agent message. ⏹ sends
+  `session/cancel` (once per turn). A prompt typed mid-handshake is
+  queued (`queuedPrompt`, the signInWanted pattern) — the first Enter
+  must never vanish.
+- **Chat only, by scope**: the handshake declares no fs capabilities
+  and `session/request_permission` is auto-declined with the agent's
+  own reject option (`chatAutoRejectPermission`, pure — it runs on
+  the read loop), noted in the transcript. A permission UI is a later
+  phase; don't bolt one on here.
+- **Transcript is the model, rows are derived**: `chatRows(width)`
+  re-wraps `[]chatMsg` on demand (word wrap for prose, hard wrap for
+  fenced code, ❯ gutter on user prompts), so resizes re-flow for
+  free. Scroll follows the termAtBottom rule. The composer is a
+  single-line `textField` (Enter sends, Up/Down history, Cmd+V pastes
+  with newlines flattened); a multi-line composer is a known
+  follow-up, not an accident.
+- Tests inject `fakeCopilotConn` (the chat layer shares the sidecar's
+  conn interface on purpose); newTestApp sets `a.chat.dead = true` so
+  nothing ever spawns the real binary.
 
 ### Navigation history (app/nav.go)
 Browser-style Go back / Go forward across files (≡ menu, Esc-o / Esc-O,
@@ -422,8 +472,8 @@ away. Tests build the App struct directly (not through `New`), so they
 still start expanded; opt into the collapsed default with
 `seedMenuFoldDefault`. Since headers and the top-zone rows are all rows,
 the geometry pins count them: `TestMenuLayout_NoCustomActions` expects
-2 top-zone rows + 50 group actions + 10 headers (62), height 68, dividers
-`[2, 5, 65]`.
+2 top-zone rows + 51 group actions + 10 headers (63), height 69, dividers
+`[2, 5, 66]`.
 
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.

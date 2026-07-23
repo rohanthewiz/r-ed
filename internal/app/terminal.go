@@ -252,6 +252,12 @@ func (a *App) menuToggleTerminal() {
 		// strip coexists with the git panel.
 		if !a.termDockLeft {
 			a.gitPanel.open = false
+		} else {
+			// Left-edge single occupancy: a left-docked terminal
+			// reclaims the strip from the chat panel (and vice versa —
+			// see menuToggleChat). Bottom-docked, the two coexist.
+			a.chat.open = false
+			a.chat.focused = false
 		}
 		a.ensureTermSession()
 	}
@@ -277,6 +283,11 @@ func (a *App) menuToggleTermDock() {
 	}
 	if !a.termDockLeft {
 		a.gitPanel.open = false
+	} else {
+		// The flip just put the terminal on the left edge — the chat
+		// panel yields it (left-edge single occupancy).
+		a.chat.open = false
+		a.chat.focused = false
 	}
 	if a.termDockLeft {
 		a.flash("Terminal docks left · file tree on the right")

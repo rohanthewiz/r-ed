@@ -72,10 +72,28 @@ type Client struct {
 	pending map[int64]chan *message
 	closed  bool
 
+	// ndjson selects newline-delimited JSON framing instead of the LSP
+	// Content-Length headers. The Agent Client Protocol (ACP) speaks
+	// the same JSON-RPC 2.0 envelope but frames each message as one
+	// line — the only wire difference, which is why ACP rides this
+	// client rather than getting a transport of its own. Set only by
+	// the ACP constructors; zero value keeps LSP framing.
+	ndjson bool
+
 	// onNotify receives server→client notifications (method + raw
 	// params). Called on the read-loop goroutine — implementations must
 	// hand off to their own event loop, not mutate shared state.
 	onNotify func(method string, params json.RawMessage)
+
+	// onRequest, when set, answers server→client REQUESTS (id +
+	// method): its return value is marshalled into the response, or its
+	// error into a JSON-RPC error object. Called on the read-loop
+	// goroutine, so implementations must be self-contained — post
+	// events for anything that needs app state. Nil keeps the built-in
+	// LSP auto-responder (empty workspace/configuration, null for the
+	// rest); ACP sets it because its server requests (permission
+	// prompts, fs access) carry real semantics a null can't answer.
+	onRequest func(method string, params json.RawMessage) (any, error)
 
 	// onExit fires once when the read loop ends (server exited, pipe
 	// closed, or protocol error). Also called from the read-loop
@@ -225,7 +243,9 @@ func (c *Client) Close() {
 }
 
 // send frames and writes one message. Serialised by writeMu so
-// concurrent Calls/Notifies can't interleave their bytes.
+// concurrent Calls/Notifies can't interleave their bytes. Framing
+// follows the connection's dialect: Content-Length headers for LSP,
+// one JSON object per line for ACP.
 func (c *Client) send(m *message) error {
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -233,6 +253,15 @@ func (c *Client) send(m *message) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if c.ndjson {
+		// json.Marshal never emits a raw newline inside an object, so
+		// body+"\n" is exactly one well-formed ndjson record.
+		if _, err := c.w.Write(body); err != nil {
+			return err
+		}
+		_, err = c.w.Write([]byte("\n"))
+		return err
+	}
 	if _, err := fmt.Fprintf(c.w, "Content-Length: %d\r\n\r\n", len(body)); err != nil {
 		return err
 	}
@@ -261,7 +290,7 @@ func marshalParams(params any) json.RawMessage {
 func (c *Client) readLoop() {
 	var loopErr error
 	for {
-		m, err := readMessage(c.r)
+		m, err := c.read()
 		if err != nil {
 			if err != io.EOF {
 				loopErr = err
@@ -303,11 +332,38 @@ func (c *Client) readLoop() {
 	}
 }
 
-// respondToServer answers a server→client request with the emptiest
-// legal payload. workspace/configuration must echo one element per
-// requested item (gopls waits on it); everything else — registration,
-// progress-token creation, message requests — accepts a null result.
+// read parses one incoming message in the connection's framing
+// dialect — Content-Length headers for LSP, one line per message for
+// ACP.
+func (c *Client) read() (*message, error) {
+	if c.ndjson {
+		return readLineMessage(c.r)
+	}
+	return readMessage(c.r)
+}
+
+// respondToServer answers a server→client request. When an onRequest
+// hook is installed (ACP), it owns the answer entirely — result on
+// success, a JSON-RPC error object on failure. Otherwise the built-in
+// LSP auto-responder applies: the emptiest legal payload.
+// workspace/configuration must echo one element per requested item
+// (gopls waits on it); everything else — registration, progress-token
+// creation, message requests — accepts a null result.
 func (c *Client) respondToServer(m *message) {
+	if c.onRequest != nil {
+		res, err := c.onRequest(m.Method, m.Params)
+		if err != nil {
+			// -32601 (method not found) is the honest default for a
+			// request this client declines to handle; the message says
+			// why.
+			_ = c.send(&message{JSONRPC: "2.0", ID: m.ID,
+				Error: &respError{Code: -32601, Message: err.Error()}})
+			return
+		}
+		raw, _ := json.Marshal(res)
+		_ = c.send(&message{JSONRPC: "2.0", ID: m.ID, Result: raw})
+		return
+	}
 	var result any
 	if m.Method == "workspace/configuration" {
 		var p struct {

@@ -213,6 +213,10 @@ func builtinMenuGroups() []menuGroup {
 			{action: (*App).menuToggleExecMarks, enabled: alwaysTrue, labelFor: (*App).execMarksToggleLabel},
 			{shortcut: "esc `", action: (*App).menuToggleTerminal, enabled: alwaysTrue, labelFor: (*App).termToggleLabel},
 			{action: (*App).menuToggleTermDock, enabled: alwaysTrue, labelFor: (*App).termDockToggleLabel},
+			// Copilot chat lives with the view toggles, not the Copilot
+			// group: it's a show/hide-a-panel action, and burying it
+			// below the fold would hide phase 3's whole surface.
+			{action: (*App).menuToggleChat, enabled: alwaysTrue, labelFor: (*App).chatToggleLabel},
 		}},
 		{title: "History", collapsible: true, items: []menuItemDef{
 			{label: "Undo", shortcut: "esc u", action: (*App).menuUndo, enabled: (*App).hasUndo},
@@ -658,6 +662,12 @@ type App struct {
 	// copilot*Events. See copilot.go.
 	copilot copilotState
 
+	// chat is the Copilot chat panel (ACP agent + transcript + left
+	// strip). Rides the copilot enable toggle but runs its own process
+	// in --acp mode. Mutated only on the main loop; the agent posts
+	// chat*Events. See copilot_chat.go.
+	chat chatState
+
 	// nav is the app-wide file-navigation history (Go back / Go
 	// forward). Recorded centrally in openFile and tabBarClick so every
 	// navigation surface — tree, tabs, finder, go-to-definition — feeds
@@ -862,6 +872,7 @@ func (a *App) Close() {
 	a.stopAutoSave()
 	a.lspShutdown()
 	a.copilotShutdown()
+	a.chatShutdown()
 	if a.screen != nil {
 		a.screen.Fini()
 	}
@@ -964,6 +975,16 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleCopilotCompletionTick(e)
 	case *copilotCompletionEvent:
 		a.handleCopilotCompletion(e)
+	case *chatReadyEvent:
+		a.handleChatReady(e)
+	case *chatExitEvent:
+		a.handleChatExit(e)
+	case *chatUpdateEvent:
+		a.handleChatUpdate(e)
+	case *chatTurnDoneEvent:
+		a.handleChatTurnDone(e)
+	case *chatPermissionEvent:
+		a.handleChatPermission(e)
 	}
 	// After every dispatch, let the LSP layer notice buffer edits and
 	// (re-)arm its didChange debounce. Runs unconditionally because
@@ -1135,11 +1156,25 @@ func (a *App) sidebarW() int {
 	return a.sidebarWidth
 }
 
+// treeOnRight reports whether the file tree lives on the RIGHT edge —
+// true whenever something else claims the left one: the left-docked
+// terminal layout, or the Copilot chat panel (which docks left with
+// the tree on the right by explicit owner preference). Every layout
+// helper that used to pivot on termDockLeft alone pivots on this, so
+// both left-strip features flip the whole UI through one predicate.
+func (a *App) treeOnRight() bool {
+	return a.termDockLeft || a.chat.open
+}
+
 // leftBlockW is how many columns the left-docked block consumes: the
-// sidebar in the classic layout, the terminal strip (when open) in
-// the flipped layout. The tab bar, editor, find bar, and bottom
-// panels all start to the right of this.
+// sidebar in the classic layout, the chat strip or the terminal strip
+// (whichever is open — the left edge is single-occupancy) in the
+// flipped layouts. The tab bar, editor, find bar, and bottom panels
+// all start to the right of this.
 func (a *App) leftBlockW() int {
+	if a.chat.open {
+		return a.chatStripW()
+	}
 	if a.termDockLeft {
 		return a.termStripW()
 	}
@@ -1147,9 +1182,9 @@ func (a *App) leftBlockW() int {
 }
 
 // rightBlockW mirrors leftBlockW for the right edge: zero in the
-// classic layout, the sidebar block in the flipped one.
+// classic layout, the sidebar block in the flipped ones.
 func (a *App) rightBlockW() int {
-	if a.termDockLeft {
+	if a.treeOnRight() {
 		return a.sidebarW()
 	}
 	return 0
@@ -1165,7 +1200,7 @@ func (a *App) sidebarRect() (x, y, w, h int) {
 	if sw <= 0 {
 		return 0, 0, 0, 0
 	}
-	if a.termDockLeft {
+	if a.treeOnRight() {
 		return a.width - sw + 1, 0, sw - 1, a.height - 1
 	}
 	return 0, 0, sw - 1, a.height - 1
@@ -1179,7 +1214,7 @@ func (a *App) splitterX() int {
 	if !a.sidebarShown {
 		return -1
 	}
-	if a.termDockLeft {
+	if a.treeOnRight() {
 		return a.width - a.sidebarWidth
 	}
 	return a.sidebarWidth - 1
@@ -1194,7 +1229,7 @@ func (a *App) inSidebarBlock(x int) bool {
 	if sw <= 0 {
 		return false
 	}
-	if a.termDockLeft {
+	if a.treeOnRight() {
 		return x >= a.width-sw
 	}
 	return x < sw
@@ -1210,8 +1245,10 @@ func (a *App) resizeSidebar(target int) {
 		target = minSidebarWidth
 	}
 	max := a.width - minEditorAfterDrag
-	if a.termDockLeft {
-		max -= a.termStripW()
+	if a.treeOnRight() {
+		// Whichever strip owns the left edge (chat or terminal) has
+		// first claim on those columns.
+		max -= a.leftBlockW()
 	}
 	if max < minSidebarWidth {
 		max = minSidebarWidth
@@ -1494,6 +1531,15 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	// shortcut: Cmd never collides with tmux prefixes or terminal flow
 	// control, which is what the no-Ctrl rule actually protects.
 	if ev.Key() == tcell.KeyRune && ev.Modifiers()&tcell.ModMeta != 0 {
+		// While the chat composer owns the keyboard, Cmd+V pastes the
+		// text clipboard into it — same convenience-layer contract as
+		// the terminal branch below.
+		if a.chat.open && a.chat.focused {
+			if ev.Rune() == 'v' {
+				a.chatPasteClip()
+			}
+			return
+		}
 		// While the terminal owns the keyboard, Cmd+V pastes the text
 		// clipboard into the command line instead of the editor buffer
 		// (Cmd+C is inert — the panel has no selection to copy).
@@ -1542,6 +1588,18 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			a.navForward()
 			return
 		}
+	}
+
+	// The focused chat composer owns everything below this point —
+	// same placement rationale as the terminal branch under it: the
+	// global command gestures (Esc leaders, double-Esc menu) keep
+	// working from inside the panel, only plain editing keys are
+	// claimed. Chat is checked first; the two focus flags are kept
+	// mutually exclusive by the click handlers, this order is just the
+	// deterministic tiebreak.
+	if a.chat.open && a.chat.focused {
+		a.handleChatKey(ev)
+		return
 	}
 
 	// The focused terminal panel owns everything below this point. The
@@ -1731,7 +1789,7 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 	// panel reshapes live as the user drags. The width the mouse implies
 	// depends on which edge the block hugs.
 	if leftDown && a.dragMode == "sidebar" {
-		if a.termDockLeft {
+		if a.treeOnRight() {
 			a.resizeSidebar(a.width - x)
 		} else {
 			a.resizeSidebar(x + 1)
@@ -1743,6 +1801,13 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 	// splitter, opposite edge.
 	if leftDown && a.dragMode == "termsplit" {
 		a.resizeTermPanelWidth(x + 1)
+		return
+	}
+
+	// Chat strip resize drag — same gesture, same edge as the
+	// left-docked terminal (the two are never open together).
+	if leftDown && a.dragMode == "chatsplit" {
+		a.resizeChatPanelWidth(x + 1)
 		return
 	}
 
@@ -1769,17 +1834,26 @@ func (a *App) handleMouse(ev *tcell.EventMouse) {
 	if leftDown && a.dragMode == "" {
 		// Any press outside the terminal panel hands the keyboard back
 		// to the editor — the mouse-first focus model: you click where
-		// you want to type.
+		// you want to type. The chat composer follows the same rule.
 		if a.term.open && a.term.focused && !a.termPanelContains(x, y) {
 			a.term.focused = false
+		}
+		if a.chat.open && a.chat.focused && !a.chatPanelContains(x, y) {
+			a.chat.focused = false
 		}
 		switch {
 		case a.splitterX() >= 0 && x == a.splitterX():
 			a.dragMode = "sidebar"
 		case a.termSplitterX() >= 0 && x == a.termSplitterX():
 			a.dragMode = "termsplit"
+		case a.chatSplitterX() >= 0 && x == a.chatSplitterX():
+			a.dragMode = "chatsplit"
 		case a.inSidebarBlock(x):
 			a.sidebarClick(x, y)
+		// The chat strip spans y==0 like a left-docked terminal, so its
+		// hit-test also runs before the tab-bar row case.
+		case a.chatPanelContains(x, y):
+			a.chatPanelPress(x, y)
 		// A left-docked terminal strip spans y==0, so its hit-test must
 		// run before the tab-bar row case; a bottom-docked strip never
 		// includes y==0, so the early check is harmless in that layout.
@@ -1837,6 +1911,10 @@ func (a *App) scrollAt(x, y, delta int) {
 	}
 	if a.gitPanel.open && a.gitPanelContains(x, y) {
 		a.gitPanelScroll(x, y, delta)
+		return
+	}
+	if a.chatPanelContains(x, y) {
+		a.chatPanelScroll(delta)
 		return
 	}
 	if a.term.open && a.termPanelContains(x, y) {
@@ -2861,6 +2939,10 @@ func (a *App) draw() {
 	if a.term.open {
 		a.drawTermPanel()
 		a.drawTermSplitter()
+	}
+	if a.chat.open {
+		a.drawChatPanel()
+		a.drawChatSplitter()
 	}
 	if a.findOpen {
 		a.drawFindBar()
