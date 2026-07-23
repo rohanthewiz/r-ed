@@ -54,6 +54,7 @@ import (
 	"time"
 
 	"github.com/rohanthewiz/r-ed/internal/clipboard"
+	"github.com/rohanthewiz/r-ed/internal/editor"
 	"github.com/rohanthewiz/r-ed/internal/lsp"
 	"github.com/rohanthewiz/r-ed/internal/userconfig"
 	"github.com/rohanthewiz/r-ed/internal/version"
@@ -125,6 +126,39 @@ type copilotState struct {
 	// notification ("Normal", "Warning", "Error", "Inactive").
 	statusKind string
 	statusMsg  string
+
+	// ---- Phase 2: ghost-text inline completions (copilot_ghost.go) ----
+
+	// suggest mirrors the persisted "suggestions" config key: whether
+	// ghost text is requested and painted at all. Independent of
+	// enabled so the sidecar can stay up (sign-in today, chat later)
+	// with just the ghost text opted out.
+	suggest bool
+
+	// docVersions/docSyncedRev are the per-path didChange version
+	// counter and the Tab.EditRev last pushed — the same bookkeeping
+	// pair lspState keeps, but flushed lazily at request time.
+	docVersions  map[string]int
+	docSyncedRev map[string]int
+
+	// armRev remembers the per-path EditRev the completion debounce was
+	// last armed for, so only fresh edits (never cursor travel or
+	// repeated dispatch-tail passes) restart the countdown.
+	armRev map[string]int
+
+	// compTimer is the single completion debounce; reqSeq stamps each
+	// request so only the newest response may paint.
+	compTimer *time.Timer
+	reqSeq    int
+
+	// The visible ghost's accept bookkeeping: which document/revision/
+	// cursor it belongs to, the parsed item (range + insertText), and
+	// the raw item JSON echoed back in telemetry.
+	ghostPath string
+	ghostRev  int
+	ghostPos  editor.Position
+	ghostItem *copilotInlineItem
+	ghostRaw  json.RawMessage
 }
 
 // -----------------------------------------------------------------------------
@@ -303,6 +337,9 @@ func copilotInitialize(c *lsp.Client, root string) (copilotAuthStatus, error) {
 		"rootUri":   lsp.PathToURI(root),
 		"capabilities": map[string]any{
 			"workspace": map[string]any{"workspaceFolders": true},
+			// Declares the inline-completion pull model so the server
+			// answers textDocument/inlineCompletion (phase 2).
+			"textDocument": map[string]any{"inlineCompletion": map[string]any{}},
 		},
 		"workspaceFolders": []map[string]any{
 			{"uri": lsp.PathToURI(root), "name": filepath.Base(root)},
@@ -339,6 +376,12 @@ func (a *App) handleCopilotReady(e *copilotReadyEvent) {
 	a.copilot.client = e.client
 	a.copilot.starting = false
 	a.copilotApplyAuth(e.status)
+	// Announce every already-open document — the tabs the user opened
+	// while the handshake was in flight — same catch-up handleLSPReady
+	// does for gopls.
+	for _, t := range a.tabs {
+		a.copilotOpenDoc(t)
+	}
 	if a.copilot.signInWanted {
 		a.copilot.signInWanted = false
 		if a.copilot.signedIn {
@@ -375,7 +418,9 @@ func (a *App) copilotShutdown() {
 }
 
 // copilotDisconnect closes the connection and resets every field that
-// only means something while a server is attached.
+// only means something while a server is attached — including the
+// phase-2 completion machinery: a ghost with no server behind it could
+// never report acceptance, so it goes too.
 func (a *App) copilotDisconnect() {
 	if a.copilot.client != nil {
 		a.copilot.client.Close()
@@ -388,6 +433,11 @@ func (a *App) copilotDisconnect() {
 	a.copilot.pendingCode = ""
 	a.copilot.statusKind = ""
 	a.copilot.statusMsg = ""
+	a.copilotStopCompletionTimer()
+	a.copilotClearGhost()
+	a.copilot.docVersions = nil
+	a.copilot.docSyncedRev = nil
+	a.copilot.armRev = nil
 }
 
 // handleCopilotStatus records the server's self-reported status. Kept

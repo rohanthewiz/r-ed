@@ -102,6 +102,12 @@ type Tab struct {
 	// cursor/selection movement or scrolling — those don't change the
 	// document a language server sees.
 	EditRev int
+
+	// Ghost is the inline-suggestion overlay (Copilot ghost text), or
+	// nil when none is showing. Owned by the app layer — it sets the
+	// display form here and clears it on any invalidating event; the
+	// Tab only paints it (see ghost.go for the splice mechanism).
+	Ghost *GhostText
 }
 
 // NewTab opens path and returns a Tab. If the file does not exist, the tab
@@ -636,6 +642,16 @@ func (t *Tab) Render(scr tcell.Screen, th theme.Theme, x, y, w, h int) {
 					rowStyles[i] = sp.Delta.Apply(rowStyles[i])
 				}
 			}
+		}
+		// Inline-suggestion ghost text: splice the dimmed proposal into
+		// the cursor row AFTER spans resolve, so decoration precedence
+		// is untouched and the paint walk below (tab stops, ScrollX,
+		// overflow arrows) handles the widened row with zero ghost
+		// awareness. See ghost.go for why this isn't a DecorationSource.
+		if t.Ghost != nil {
+			ghostStyle := tcell.StyleDefault.Background(lineBg).
+				Foreground(th.Muted).Attributes(tcell.AttrItalic)
+			runes, rowStyles = t.ghostOverlay(lineIdx, runes, rowStyles, ghostStyle)
 		}
 		scrollVisual := LineVisualCol(runes, t.ScrollX)
 		visualCol := 0 // visual cell offset from the start of the LINE

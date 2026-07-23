@@ -60,6 +60,8 @@ internal/editor/decoration.go Span/GutterMark overlay system merged in Tab.Rende
 internal/lsp/client.go        Minimal JSON-RPC-over-stdio LSP client (stdlib only)
 internal/app/lsp.go           gopls lifecycle, doc sync, diagnostics, definition, hover
 internal/app/copilot.go       GitHub Copilot sidecar: lifecycle + device-flow sign-in
+internal/app/copilot_ghost.go Copilot phase 2: doc sync + inline completions (ghost text)
+internal/editor/ghost.go      GhostText display form + the render-row splice overlay
 internal/app/autosave.go      Idle-debounced auto-save (EditRev signature → autoSaveEvent)
 internal/app/zipops.go        Zip file/folder — stdlib archive/zip, async zipDoneEvent
 internal/app/format.go        Format-on-save bridge: project config, builtin Go, prompts
@@ -216,10 +218,48 @@ SDK dependency. House rules:
   stubbable vars `copilotCopyCode` / `copilotOpenBrowser`; newTestApp
   neuters both and sets `a.copilot.dead = true` so tests never spawn a
   real sidecar. Copilot tests inject `fakeCopilotConn`.
-- Planned next phases (owner-approved): ghost-text inline completions
-  (phase 2), then a chat panel via ACP (`--acp` mode, same binary,
-  phase 3) docked on the LEFT edge — the file tree stays RIGHT; that
-  unconventional arrangement is the owner's explicit preference.
+- Planned next phase (owner-approved): a chat panel via ACP (`--acp`
+  mode, same binary, phase 3) docked on the LEFT edge — the file tree
+  stays RIGHT; that unconventional arrangement is the owner's explicit
+  preference.
+
+### Copilot ghost text (app/copilot_ghost.go + editor/ghost.go) — phase 2
+Inline completions painted dimmed at the caret, Tab to accept. House
+rules:
+
+- **Ghost text is NOT a DecorationSource** — decorations restyle cells
+  the buffer owns; a suggestion ADDS cells. `Tab.Render` splices the
+  proposal into the cursor row's runes/styles AFTER decoration merge
+  (`ghostOverlay`), so the paint walk (tab stops, ScrollX, overflow
+  arrows) needs zero ghost awareness. Only the first line renders
+  inline; extra lines are summarised by a `⋯+N` marker — no virtual
+  rows, ever (they'd ripple through scrolling and hit-testing).
+- **Doc sync is lazy**: didOpen/didClose track tab lifecycle (all text
+  files, not just Go — `copilotLanguageID` maps ext → languageId), but
+  didChange flushes only right before a completion request. The Copilot
+  server only answers questions we ask; steady sync would be traffic
+  for nobody.
+- **Only EditRev movement arms the 300ms debounce** (dispatch-tail
+  `copilotAfterEvent`, mirrors `lspAfterEvent`) — cursor travel never
+  spends a request. Responses are validated against the request's
+  (path, EditRev, cursor) AND a reqSeq before painting; anything stale
+  drops silently. `copilotOpenDoc` seeds `armRev` so merely opening a
+  file never fires a request.
+- **Accept replaces the server's range** (select + InsertString = one
+  undo step) with the full InsertText — never the display form.
+  Acceptance telemetry = executing the item's command; shown telemetry
+  (`didShowCompletion`) echoes the RAW item JSON so correlation fields
+  this client doesn't model survive. The Tab key falls through to
+  plain indent when no ghost is painted.
+- **Separate opt-out**: the `"suggestions"` config key (default on,
+  `SaveSuggestions`, ≡ Copilot group toggle) controls ghost text
+  independently of `"copilot"` — a user can keep the sidecar for
+  sign-in/chat while disabling just the ghost text. Toggling off
+  clears any visible ghost immediately.
+- Ghost bookkeeping lives on `App.copilot` (ghostPath/Rev/Pos/Item/
+  Raw); the Tab only carries the display form. Esc clears the ghost as
+  a side effect (never swallowed); `copilotDisconnect` tears down the
+  ghost, timer, and doc maps.
 
 ### Navigation history (app/nav.go)
 Browser-style Go back / Go forward across files (≡ menu, Esc-o / Esc-O,
@@ -382,8 +422,8 @@ away. Tests build the App struct directly (not through `New`), so they
 still start expanded; opt into the collapsed default with
 `seedMenuFoldDefault`. Since headers and the top-zone rows are all rows,
 the geometry pins count them: `TestMenuLayout_NoCustomActions` expects
-2 top-zone rows + 49 group actions + 10 headers (61), height 67, dividers
-`[2, 5, 64]`.
+2 top-zone rows + 50 group actions + 10 headers (62), height 68, dividers
+`[2, 5, 65]`.
 
 ### Sidebar splitter drag
 A drag is detected when a press lands at exactly `x == splitterX()`.

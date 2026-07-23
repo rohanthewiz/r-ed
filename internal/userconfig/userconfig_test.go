@@ -514,3 +514,73 @@ func TestSaveCopilot_RoundTripsAndPreserves(t *testing.T) {
 		t.Fatal("unknown key was dropped by the save round-trip")
 	}
 }
+
+// TestDefaultsSuggestionsOn pins the ghost-text default: on. The key
+// exists so a user can keep the sidecar for sign-in/chat while opting
+// out of just the inline completions.
+func TestDefaultsSuggestionsOn(t *testing.T) {
+	if !Defaults().Suggestions {
+		t.Fatal("Defaults().Suggestions = false, want true")
+	}
+}
+
+// TestLoadSuggestionsValues exercises the recognised suggestions values
+// and the absent-field default, mirroring the copilot table.
+func TestLoadSuggestionsValues(t *testing.T) {
+	cases := map[string]bool{
+		`{"suggestions":"on"}`:    true,
+		`{"suggestions":"off"}`:   false,
+		`{"suggestions":" OFF "}`: false, // case/whitespace tolerant
+		`{}`:                      true,  // omitted field keeps the default
+	}
+	for body, want := range cases {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if cfg.Suggestions != want {
+			t.Errorf("Load(%s).Suggestions = %v, want %v", body, cfg.Suggestions, want)
+		}
+	}
+}
+
+// TestLoadSuggestionsInvalid mirrors the house rule for every key: a
+// typo'd value is an error the caller can flash, not a silent fallback.
+func TestLoadSuggestionsInvalid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"suggestions":"sometimes"}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("invalid suggestions value should error")
+	}
+}
+
+// TestSaveSuggestions_RoundTripsAndPreserves saves the preference into
+// a config that already has hand-set keys and verifies both survive —
+// the same unknown-key guarantee every SaveX makes.
+func TestSaveSuggestions_RoundTripsAndPreserves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	seed := "{\n  \"icons\": \"on\",\n  \"future-key\": 42\n}\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SaveSuggestions(path, false); err != nil {
+		t.Fatalf("SaveSuggestions: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if cfg.Suggestions || cfg.Icons != IconsOn {
+		t.Fatalf("round trip lost values: suggestions=%v icons=%q", cfg.Suggestions, cfg.Icons)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "future-key") {
+		t.Fatal("unknown key was dropped by the save round-trip")
+	}
+}

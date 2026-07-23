@@ -37,12 +37,30 @@ type fakeCopilotConn struct {
 	closed   bool
 	results  map[string]any   // method → value marshalled into the caller's result
 	errs     map[string]error // method → scripted failure
+
+	// params holds each recorded payload keyed by method (Calls and
+	// Notifies alike), marshalled to JSON so tests can assert on wire
+	// shape without sharing memory with the app's own structures.
+	params map[string][]json.RawMessage
+}
+
+// recordParams stashes one payload under method. Callers hold f.mu.
+func (f *fakeCopilotConn) recordParams(method string, params any) {
+	if f.params == nil {
+		f.params = map[string][]json.RawMessage{}
+	}
+	b, err := json.Marshal(params)
+	if err != nil {
+		b = []byte("null")
+	}
+	f.params[method] = append(f.params[method], b)
 }
 
 // Call records the method and plays back the scripted response.
 func (f *fakeCopilotConn) Call(method string, params, result any) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, method)
+	f.recordParams(method, params)
 	res := f.results[method]
 	err := f.errs[method]
 	f.mu.Unlock()
@@ -70,7 +88,22 @@ func (f *fakeCopilotConn) Notify(method string, params any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.notifies = append(f.notifies, method)
+	f.recordParams(method, params)
 	return nil
+}
+
+// notified reports whether method was sent as a notification (race-safe).
+func (f *fakeCopilotConn) notified(method string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.notifies, method)
+}
+
+// paramsFor returns every payload recorded for method (race-safe).
+func (f *fakeCopilotConn) paramsFor(method string) []json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.params[method])
 }
 
 // Close records that the connection was torn down.

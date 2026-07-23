@@ -28,6 +28,10 @@
 //	{"copilot": "on"}       // default; run copilot-language-server when
 //	                        // it's installed (silent no-op when absent)
 //	{"copilot": "off"}      // never spawn the Copilot sidecar
+//	{"suggestions": "on"}   // default; show Copilot ghost-text inline
+//	                        // completions while typing (needs copilot on)
+//	{"suggestions": "off"}  // sidecar may run (sign-in, chat later) but
+//	                        // never paints ghost text
 //
 // The loader is best-effort the same way customactions is: missing
 // file → defaults, malformed file → error returned for the app to
@@ -94,13 +98,20 @@ type Config struct {
 	// for people who have the binary for other editors but don't want
 	// r-ed touching it. Persisted by the ≡ toggle, same as AutoSave.
 	Copilot bool
+
+	// Suggestions controls whether Copilot ghost-text inline completions
+	// are requested and painted while typing. Separate from Copilot so a
+	// user can keep the sidecar (sign-in today, chat later) while opting
+	// out of just the ghost text — the most intrusive part. Defaults to
+	// on; moot while Copilot is off. Persisted by the ≡ toggle.
+	Suggestions bool
 }
 
 // Defaults returns a Config populated with the values used when no
 // config file is present (or every field in it is blank). Centralised
 // so tests and the loader can't drift from each other.
 func Defaults() Config {
-	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom, ExecMarks: true, Copilot: true}
+	return Config{Icons: IconsAuto, AutoSave: true, TermDock: TermDockBottom, ExecMarks: true, Copilot: true, Suggestions: true}
 }
 
 // fileFormat mirrors the on-disk JSON shape. We decode into this and
@@ -110,11 +121,12 @@ func Defaults() Config {
 // field reason: a missing key must mean "keep the default", and JSON
 // false is indistinguishable from absent on a plain bool.
 type fileFormat struct {
-	Icons     string `json:"icons,omitempty"`
-	AutoSave  string `json:"autosave,omitempty"`
-	TermDock  string `json:"termdock,omitempty"`
-	ExecMarks string `json:"execmarks,omitempty"`
-	Copilot   string `json:"copilot,omitempty"`
+	Icons       string `json:"icons,omitempty"`
+	AutoSave    string `json:"autosave,omitempty"`
+	TermDock    string `json:"termdock,omitempty"`
+	ExecMarks   string `json:"execmarks,omitempty"`
+	Copilot     string `json:"copilot,omitempty"`
+	Suggestions string `json:"suggestions,omitempty"`
 }
 
 // configFilePath resolves the r-ed config directory
@@ -257,6 +269,20 @@ func Load(path string) (Config, error) {
 			path, ff.Copilot,
 		)
 	}
+
+	switch strings.ToLower(strings.TrimSpace(ff.Suggestions)) {
+	case "":
+		// field omitted — keep default
+	case "on":
+		cfg.Suggestions = true
+	case "off":
+		cfg.Suggestions = false
+	default:
+		return Defaults(), fmt.Errorf(
+			"%s: suggestions must be \"on\" or \"off\" (got %q)",
+			path, ff.Suggestions,
+		)
+	}
 	return cfg, nil
 }
 
@@ -294,6 +320,17 @@ func SaveCopilot(path string, on bool) error {
 		val = "off"
 	}
 	return saveKey(path, "copilot", val)
+}
+
+// SaveSuggestions persists the ghost-text inline-completion preference
+// into the config file at path. See saveKey for the round-trip
+// guarantees.
+func SaveSuggestions(path string, on bool) error {
+	val := "on"
+	if !on {
+		val = "off"
+	}
+	return saveKey(path, "suggestions", val)
 }
 
 // saveKey writes one preference into the config file at path,

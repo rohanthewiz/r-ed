@@ -255,6 +255,7 @@ func builtinMenuGroups() []menuGroup {
 		// in is the first thing a new user reaches for. See copilot.go.
 		{title: "Copilot", collapsible: true, items: []menuItemDef{
 			{action: (*App).menuCopilotAuth, enabled: alwaysTrue, labelFor: (*App).copilotAuthLabel},
+			{action: (*App).menuToggleSuggestions, enabled: alwaysTrue, labelFor: (*App).suggestionsToggleLabel},
 			{action: (*App).menuToggleCopilot, enabled: alwaysTrue, labelFor: (*App).copilotToggleLabel},
 		}},
 		{title: "File", collapsible: true, items: []menuItemDef{
@@ -788,6 +789,7 @@ func (a *App) loadUserConfig() {
 	a.autoSaveEnabled = cfg.AutoSave
 	a.termDockLeft = cfg.TermDock == userconfig.TermDockLeft
 	a.copilot.enabled = cfg.Copilot
+	a.copilot.suggest = cfg.Suggestions
 }
 
 // refreshGitStatus re-runs `git status --porcelain` against the project
@@ -958,12 +960,19 @@ func (a *App) handleEvent(ev tcell.Event) {
 		a.handleCopilotSignInDone(e)
 	case *copilotSignOutDoneEvent:
 		a.handleCopilotSignOutDone(e)
+	case *copilotCompletionTickEvent:
+		a.handleCopilotCompletionTick(e)
+	case *copilotCompletionEvent:
+		a.handleCopilotCompletion(e)
 	}
 	// After every dispatch, let the LSP layer notice buffer edits and
 	// (re-)arm its didChange debounce. Runs unconditionally because
 	// edits arrive through many paths (keys, paste, modals, reloads on
 	// the refresh tick) and this is a few integer compares when idle.
 	a.lspAfterEvent()
+	// The Copilot twin: drop a ghost the event invalidated and re-arm
+	// the inline-completion debounce on fresh edits. See copilot_ghost.go.
+	a.copilotAfterEvent()
 	// Same trick for auto-save: any event that mutated a buffer
 	// re-arms the idle countdown. See autosave.go.
 	a.autoSaveAfterEvent()
@@ -1405,6 +1414,10 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	}
 
 	if ev.Key() == tcell.KeyEsc {
+		// Esc always dismisses a ghost suggestion — the one editing
+		// gesture that clears it without moving the cursor. Purely a
+		// side effect: the menu/leader behavior below runs regardless.
+		a.copilotClearGhost()
 		// Esc is the editor's only command key. Behavior:
 		//   • menu open  → close it
 		//   • menu shut  → open it on the SECOND Esc within doubleEscMs;
@@ -1596,6 +1609,13 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	case tcell.KeyDelete:
 		tab.Delete()
 	case tcell.KeyTab:
+		// A visible ghost suggestion claims Tab first; with none
+		// showing, Tab is plain indentation as ever. The accept only
+		// triggers while the ghost is actually painted, so muscle-
+		// memory indents can't be hijacked by a stale item.
+		if a.copilotAcceptGhost() {
+			return
+		}
 		tab.InsertString(tab.IndentUnit)
 	case tcell.KeyRune:
 		tab.InsertRune(ev.Rune())
@@ -2194,6 +2214,7 @@ func (a *App) openFile(path string) {
 	a.tabs = append(a.tabs, t)
 	a.activeTab = len(a.tabs) - 1
 	a.lspOpenDoc(t)
+	a.copilotOpenDoc(t)
 	a.flash(fmt.Sprintf("Opened %s", filepath.Base(path)))
 }
 
@@ -2306,6 +2327,7 @@ func (a *App) closeTab(idx int) {
 	// bookkeeping, which also tells the server the document is gone.
 	delete(a.fileDiffs, a.tabs[idx].Path)
 	a.lspCloseDoc(a.tabs[idx].Path)
+	a.copilotCloseDoc(a.tabs[idx].Path)
 	a.tabs = append(a.tabs[:idx], a.tabs[idx+1:]...)
 	if a.activeTab >= len(a.tabs) {
 		a.activeTab = len(a.tabs) - 1
